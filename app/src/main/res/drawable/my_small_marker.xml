@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <!-- 设置大小，这里使用 30dp，可根据需要调整 -->
+    <size
+        android:width="10dp"
+        android:height="10dp" />
+    <!-- 半透明蓝色，#80 表示 50% 透明度 -->
+    <solid android:color="#80ADD8E6" />
+</shape>

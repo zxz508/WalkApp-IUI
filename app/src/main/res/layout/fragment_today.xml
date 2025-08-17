@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    tools:context=".HomeFragments.HomeFragment">
+
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_gradient"
+        tools:context=".HomeFragments.HomeFragment">
+
+        <!-- 顶部日历选择控件 -->
+        <CalendarView
+            android:id="@+id/calendar_view"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_margin="16dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"/>
+
+        <!--距离卡片 -->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/card_today_steps"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="24dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            app:layout_constraintTop_toBottomOf="@id/calendar_view"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            tools:layout_editor_absoluteY="144dp"
+            tools:ignore="MissingConstraints">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="24dp">
+
+                <!-- 横向可滑动的自定义进度条 -->
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:scrollbars="none">
+
+                    <FrameLayout
+                        android:id="@+id/progress_container"
+                        android:layout_width="match_parent"
+                        android:layout_height="60dp">
+
+
+                        <!-- Marker 10000步：红色标识 -->
+
+                        <FrameLayout
+                            android:id="@+id/progress_wrapper"
+                            android:layout_width="400dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/bg_progress_border">
+
+                            <ProgressBar
+                                android:id="@+id/progressBar"
+                                style="?android:attr/progressBarStyleHorizontal"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:max="100"
+                                android:progress="0"
+                                android:progressDrawable="@drawable/progress_fill_only"
+                                android:background="@android:color/transparent"/>
+                        </FrameLayout>
+
+                        <View
+                            android:id="@+id/marker_10000"
+                            android:layout_width="8dp"
+                            android:layout_height="16dp"
+                            android:layout_marginStart="100dp"
+                            android:layout_gravity="top"
+                            android:background="@drawable/circle_marker" />
+
+                        <!-- Marker 25000步：红色标识 -->
+
+                        <View
+                            android:id="@+id/marker_25000"
+                            android:layout_width="8dp"
+                            android:layout_height="16dp"
+                            android:layout_marginStart="200dp"
+                            android:layout_gravity="top"
+                            android:background="@drawable/circle_marker" />
+
+
+
+                        <View
+                            android:id="@+id/marker_60000"
+                            android:layout_width="8dp"
+                            android:layout_height="16dp"
+                            android:layout_marginStart="300dp"
+                            android:layout_gravity="top"
+                            android:background="@drawable/circle_marker" />
+
+
+
+
+                    </FrameLayout>
+                </HorizontalScrollView>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Walking distance today"
+                    android:textSize="18sp"
+                    android:textColor="@color/colorPrimaryDark"
+                    android:textStyle="bold"
+                    android:layout_gravity="center"/>
+
+                <!-- 步数显示文字（修改为中文，字体大小 20sp） -->
+                <TextView
+                    android:id="@+id/distance_count_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="8dp"
+                    android:text="0"
+                    android:textColor="@color/colorAccent"
+
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <!-- 去掉英文说明，替换为中文提示 -->
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+        <!-- 卡路里显示卡片 -->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/card_calories"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            app:layout_constraintTop_toBottomOf="@id/card_today_steps"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="24dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Calories burned today"
+                    android:textSize="18sp"
+                    android:textColor="@color/colorPrimaryDark"
+                    android:textStyle="bold"
+                    android:layout_gravity="center"/>
+
+                <TextView
+                    android:id="@+id/calories_burned_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0 calories"
+                    android:textSize="24sp"
+                    android:textColor="@color/colorAccent"
+                    android:textStyle="bold"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="16dp"/>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- 步行步数显示卡片 -->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/card_steps"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            app:layout_constraintTop_toBottomOf="@id/card_calories"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="24dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Walking steps"
+                    android:textSize="18sp"
+                    android:textColor="@color/colorPrimaryDark"
+                    android:textStyle="bold"
+                    android:layout_gravity="center"/>
+
+                <TextView
+                    android:id="@+id/distance_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textSize="24sp"
+                    android:textColor="@color/colorAccent"
+                    android:textStyle="bold"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="16dp"/>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- 底部提示语 -->
+        <TextView
+            android:id="@+id/step_info_text"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Every step brings you closer to your health goal!"
+            android:textSize="14sp"
+            android:textColor="@color/primaryColor"
+            android:gravity="center"
+            android:layout_marginHorizontal="32dp"
+            android:layout_marginTop="24dp"
+            app:layout_constraintTop_toBottomOf="@id/card_steps"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            tools:ignore="NotSibling" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.core.widget.NestedScrollView>

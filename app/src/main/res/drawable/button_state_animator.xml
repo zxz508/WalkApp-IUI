@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 按下状态时降低 elevation -->
+    <item android:state_pressed="true">
+        <objectAnimator
+            android:propertyName="translationZ"
+            android:duration="0"
+            android:valueTo="0dp"
+            android:valueType="floatType" />
+    </item>
+    <!-- 默认状态保持一定的 elevation -->
+    <item>
+        <objectAnimator
+            android:propertyName="translationZ"
+            android:duration="0"
+            android:valueTo="4dp"
+            android:valueType="floatType" />
+    </item>
+</selector>

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="@color/screen_background">
+
+    <!-- 按钮容器 -->
+    <LinearLayout
+        android:id="@+id/profile_buttons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="100dp"
+        android:background="@drawable/rounded_container"
+        android:elevation="8dp"
+        android:padding="16dp">
+
+        <Button
+            android:id="@+id/btn_personal_info"
+            style="@style/ProfileActionButton"
+            android:textColor="@color/black"
+            android:text="Pesonal Info"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="12dp"
+            android:background="@color/divider_gray"/>
+
+        <Button
+            android:id="@+id/btn_help_center"
+            style="@style/ProfileActionButton"
+            android:textColor="@color/black"
+            android:text="Location"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="12dp"
+            android:background="@color/divider_gray"/>
+
+        <Button
+            android:id="@+id/btn_settings"
+            style="@style/ProfileActionButton"
+            android:textColor="@color/black"
+            android:text="Setting"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="12dp"
+            android:background="@color/divider_gray"/>
+
+        <Button
+            android:id="@+id/btn_logout"
+            style="@style/ProfileActionButton"
+            android:textColor="@color/black"
+            android:text="Log out"/>
+
+    </LinearLayout>
+
+    <!-- Fragment容器 -->
+    <FrameLayout
+        android:id="@+id/fragment_container_profile"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="24dp"/>
+
+</LinearLayout>

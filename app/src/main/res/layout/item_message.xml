@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="8dp">
+
+    <!-- 用户消息 TextView 靠右显示 -->
+    <TextView
+        android:id="@+id/user_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_marginStart="50dp"
+        android:background="@drawable/edittext_background"
+        android:textColor="@color/black"
+        android:padding="8dp"
+        android:visibility="gone"/>
+
+    <!-- 机器人消息 TextView 靠左显示 -->
+    <TextView
+        android:id="@+id/bot_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentStart="true"
+        android:layout_marginEnd="50dp"
+        android:background="@drawable/edittext_background"
+        android:textColor="@color/black"
+        android:padding="8dp"
+        android:visibility="gone"/>
+
+    <!-- 自定义消息容器 -->
+    <FrameLayout
+        android:id="@+id/custom_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"/>
+</RelativeLayout>

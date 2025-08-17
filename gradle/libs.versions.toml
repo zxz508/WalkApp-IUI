@@ -1,0 +1,51 @@
+[versions]
+agp = "8.9.0"
+
+androidxAppcompat = "1.3.1"
+gson = "2.10.1"
+parcelize = "1.9.0"
+
+health = "6.11.0.303"
+hwid ="6.12.0.300"
+junit = "4.13.2"
+junitVersion = "1.2.1"
+espressoCore = "3.6.1"
+appcompat = "1.7.0"
+material = "1.12.0"
+activity = "1.9.3"
+constraintlayout = "2.2.0"
+
+playServicesAuthVersion = "21.3.0"
+roomRuntimeVersion = "2.4.3"
+googleServices = "4.4.2"
+firebaseCrashlyticsBuildtools = "3.0.3"
+playServicesMaps = "19.2.0"
+roomCommonJvm = "2.7.0-rc01"
+
+[libraries]
+androidx-appcompat-v131 = { module = "androidx.appcompat:appcompat", version.ref = "androidxAppcompat" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+
+gms-play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuthVersion" }
+health = { module = "com.huawei.hms:health", version.ref = "health" }
+hwid = { module = "com.huawei.hms:hwid", version.ref = "hwid" }
+
+androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "roomRuntimeVersion" }
+
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+firebase-crashlytics-buildtools = { group = "com.google.firebase", name = "firebase-crashlytics-buildtools", version.ref = "firebaseCrashlyticsBuildtools" }
+play-services-maps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
+androidx-room-common-jvm = { group = "androidx.room", name = "room-common-jvm", version.ref = "roomCommonJvm" }
+
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+parcelize = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "parcelize" }
+firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "firebaseCrashlyticsBuildtools" }

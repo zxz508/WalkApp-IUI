@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- 用于动态添加 MapContainerView 的容器 -->
+    <FrameLayout
+        android:id="@+id/map_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"/>
+
+    <!-- 固定在屏幕中心的指针图片 -->
+    <ImageView
+        android:id="@+id/pointer_image"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:src="@drawable/baseline_arrow_downward_24"
+        android:layout_gravity="center"/>
+
+    <!-- 右上角 Options 按钮 -->
+    <Button
+        android:id="@+id/btn_options"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Options"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"/>
+
+    <!-- 左上角 View 按钮 -->
+    <Button
+        android:id="@+id/btn_view"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="View"
+        android:layout_gravity="top|start"
+        android:layout_margin="16dp"/>
+
+    <!-- 底部弹出的选项面板 -->
+    <LinearLayout
+        android:id="@+id/options_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#FFFFFF"
+        android:padding="16dp"
+        android:layout_gravity="bottom"
+        android:visibility="gone">
+
+        <!-- 切换按钮 -->
+        <!-- 三个评分输入框：1-5 -->
+        <LinearLayout
+            android:id="@+id/input_panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Feature: 5 number represent 风景，人流量，车流量，遮荫，路面平整" />
+            <EditText
+                android:id="@+id/input_feature"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number" />
+        </LinearLayout>
+
+
+        <!-- 保存按钮 -->
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Save Location"/>
+
+        <Button
+            android:id="@+id/btn_finish"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Finish route"
+            android:layout_gravity="bottom|end"
+            />
+    </LinearLayout>
+</FrameLayout>
