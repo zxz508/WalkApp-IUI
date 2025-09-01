@@ -8,7 +8,7 @@
     android:padding="16dp">
 
     <!-- 共同容器，内部包含数据展示和地图容器 -->
-    <FrameLayout
+    <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/container"
         android:layout_width="0dp"
         android:layout_height="0dp"
@@ -17,29 +17,37 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- 数据展示：用于显示所有跑步记录 -->
+        <!-- 路径/数据滚动区：默认可见，铺满内层容器 -->
         <ScrollView
             android:id="@+id/scrollView_paths"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:fillViewport="true">
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:fillViewport="true"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
             <LinearLayout
                 android:id="@+id/fitness_data_container"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="8dp">
-                <!-- 这里动态添加数据卡片 -->
-            </LinearLayout>
+                android:padding="8dp"/>
         </ScrollView>
 
-        <!-- 地图容器：显示 MapFragment -->
+        <!-- 地图容器：同样铺满内层容器；默认 GONE，代码里需要显示地图时再设为 VISIBLE -->
         <FrameLayout
-            android:id="@+id/map_fragment_container"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:visibility="gone"/>
-    </FrameLayout>
+            android:id="@+id/map_container"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"/>
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
     <Button
         android:id="@+id/btn_toggle_select"
         android:layout_width="0dp"

@@ -1,18 +1,23 @@
 package com.example.walkpromote22.tool;
 
+
+
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.widget.LinearLayout;
 import android.widget.Toast;
+
+import androidx.core.content.ContextCompat;
 
 import com.amap.api.location.AMapLocation;
 import com.amap.api.location.AMapLocationClient;
@@ -69,7 +74,9 @@ public class MapTool extends LinearLayout {
     // 在 MapContainerView 类中添加成员变量：
     private Marker currentLocationMarker;
 
-
+    private boolean mapReady = false;
+    private final java.util.List<Runnable> pendingMapTasks = new java.util.ArrayList<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private ExecutorService executorService = Executors.newSingleThreadExecutor();
     private AMap aMap;
     // 用于显示实际轨迹的 polyline
@@ -89,6 +96,7 @@ public class MapTool extends LinearLayout {
     // 路线规划对象
 
 
+    private final String TAG="TAG";
 
 
 
@@ -110,49 +118,61 @@ public class MapTool extends LinearLayout {
         init(context);
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private void init(Context context) throws Exception {
-        // 初始化 MapView 并加入当前容器
+        // 1) MapView 基本初始化
         mapView = new MapView(context);
-        // 在 Application 的 onCreate 或启动前进行隐私政策配置
-
-
         LayoutParams params = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
         mapView.setLayoutParams(params);
         addView(mapView);
-
-        // 调用 MapView 的 onCreate 方法（传入 null 或 Bundle）
         mapView.onCreate(null);
-        // 为 MapView 设置 onTouchListener 来捕获触摸事件
 
+        // 2) 取得 AMap
         aMap = mapView.getMap();
-        if (aMap != null) {
-            aMap.getUiSettings().setZoomControlsEnabled(false);
-            aMap.getUiSettings().setZoomGesturesEnabled(true);
-        } else {
+        aMap.setOnMapLoadedListener(new AMap.OnMapLoadedListener() {
+            @Override public void onMapLoaded() {
+                mapReady = true;
+                if (!pendingMapTasks.isEmpty()) {
+                    java.util.List<Runnable> copy = new java.util.ArrayList<>(pendingMapTasks);
+                    pendingMapTasks.clear();
+                    for (Runnable r : copy) runOnUiThreadX(r);
+                }
+            }
+        });
+
+        if (aMap == null) {
             Toast.makeText(context, "地图加载失败", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        aMap.getUiSettings().setZoomControlsEnabled(false);
+        aMap.getUiSettings().setZoomGesturesEnabled(true);
+
+        // 3) 提前创建用于“实时轨迹/导航轨迹”的 Polyline（避免定位刚到来时 NPE）
+        if (NavigateLine == null) {
+            NavigateLine = aMap.addPolyline(new PolylineOptions()
+                    .width(10)
+                    .color(0xD4AF37)
+                    .geodesic(true));
+        }
+        if (userTrackPolyline == null) {
+            userTrackPolyline = aMap.addPolyline(new PolylineOptions()
+                    .width(10)
+                    .color(0xFFFF0000)
+                    .geodesic(true));
         }
 
-        // 初始化两个 Polyline，一个用于实际轨迹，一个用于规划路线
-        NavigateLine = aMap.addPolyline(new PolylineOptions()
-                .width(10)
-                .color(0xD4AF37)
-                .geodesic(true));
-
-
-        // 用于绘制用户路径的 Polyline
-
-// 在初始化方法中初始化 `userTrackPolyline`：
-        userTrackPolyline = aMap.addPolyline(new PolylineOptions()
-                .width(10) // 设置轨迹的宽度
-                .color(0xFFFF0000) // 设置轨迹的颜色为红色，方便区分
-                .geodesic(true)); // 设置为大圆路径
-        // 规划路线用红色显示
-
-        // 为 MapView 设置 onTouchListener 来捕获触摸事件
-
-
+        // 4) 地图加载完成 → 打开闸门，执行所有待办绘制任务
+        aMap.setOnMapLoadedListener(new AMap.OnMapLoadedListener() {
+            @Override public void onMapLoaded() {
+                mapReady = true;
+                if (!pendingMapTasks.isEmpty()) {
+                    java.util.List<Runnable> copy = new java.util.ArrayList<>(pendingMapTasks);
+                    pendingMapTasks.clear();
+                    for (Runnable r : copy) runOnUiThreadX(r);
+                }
+            }
+        });
     }
+
 
     public AMap getAMap() {
         return aMap;
@@ -241,61 +261,142 @@ public class MapTool extends LinearLayout {
         }
         locationClient.startLocation();
     }
-    public void startLocation(final float zoomLevel, List<Location> routeLocations) throws Exception {
-        if (locationClient == null) {
-            destinRoute=LocationToLatLng(routeLocations);
 
+
+
+    public void startLocation(final float zoomLevel, List<Location> routeLocations) throws Exception {
+        final long enterTs = android.os.SystemClock.elapsedRealtime();
+
+
+        final AMap map = getAMap();
+        if (map == null) {
+            Log.w(TAG, "[startLocation] getAMap()==null");
+            return;
+        }
+
+        // 开启定位层（不会自动移动镜头）
+        try {
+            map.setMyLocationEnabled(true);
+        } catch (Throwable e) {
+            Log.e(TAG, "[startLocation] setMyLocationEnabled error: " + e.getMessage(), e);
+        }
+
+        // 绘制路线（不透明色，避免看不见）
+        if (routeLocations != null && !routeLocations.isEmpty()) {
+            java.util.List<LatLng> latLngList = new java.util.ArrayList<>();
+            for (Location loc : routeLocations) {
+                if (loc != null) latLngList.add(new LatLng(loc.getLatitude(), loc.getLongitude()));
+            }
+            try {
+                drawRoute(latLngList, 0xFFADD8E6);
+            } catch (Throwable drawEx) {
+                Log.e(TAG, "[startLocation] drawRoute error: " + drawEx.getMessage(), drawEx);
+            }
+        } else {
+            Log.e(TAG, "[startLocation] no route to draw");
+        }
+
+        // ====== 新增：网络能力检测日志 ======
+        String netLog = "unknown";
+        boolean hasValidated = false, hasInetCap = false;
+        boolean trWifi = false, trCell = false, trVpn = false;
+
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                android.net.Network active = null;
+                if (android.os.Build.VERSION.SDK_INT >= 23) active = cm.getActiveNetwork();
+                if (active != null && android.os.Build.VERSION.SDK_INT >= 21) {
+                    android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+                    if (caps != null) {
+                        if (android.os.Build.VERSION.SDK_INT >= 23) {
+                            hasValidated = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                        }
+                        hasInetCap = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        trWifi = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI);
+                        trCell = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR);
+                        trVpn  = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN);
+
+                    }
+                }
+            }
+        } catch (Throwable ignore) { }
+
+
+        // ✅ 宽松判断：只要有 INTERNET 能力且有 Wi-Fi/蜂窝，就认为“有网”
+        boolean hasInternetLikely = hasInetCap && (trWifi || trCell);
+        // ===================================
+
+        final boolean[] centeredOnce = {false};
+
+        if (locationClient == null) {
             locationClient = new AMapLocationClient(getContext().getApplicationContext());
+
             AMapLocationClientOption option = new AMapLocationClientOption();
             option.setLocationMode(AMapLocationClientOption.AMapLocationMode.Hight_Accuracy);
-            option.setInterval(2000); // 每2秒一次定位
+            option.setInterval(2000);      // 2s 一次
             option.setOnceLocation(false);
+            option.setNeedAddress(false);
+            option.setMockEnable(false);
+            option.setLocationCacheEnable(true);
+
+            // ✅ 如果系统误判 validated=false，但我们认为 hasInternetLikely=true，仍然走网络定位
+            if (hasInternetLikely) {
+                option.setOnceLocationLatest(true); // 尽快拿到最近一次/缓存结果
+                option.setHttpTimeOut(3000);
+            }
+
             locationClient.setLocationOption(option);
             totalDistance = 0f;
 
             locationClient.setLocationListener(new AMapLocationListener()  {
                 @Override
                 public void onLocationChanged(AMapLocation aMapLocation) {
-                    Log.e("!2","!!!!");
+
                     if (aMapLocation != null && aMapLocation.getErrorCode() == 0) {
                         currentLocation = new LatLng(aMapLocation.getLatitude(), aMapLocation.getLongitude());
-                        Log.e("12",currentLocation+"当前坐标");
-                        if (!realTimePath.isEmpty()) {//如果没有这个就没法定位甚至不报错太坑了
-                            totalDistance += distanceBetween(currentLocation, realTimePath.get(realTimePath.size() - 1));
+
+                        if (!centeredOnce[0]) {
+                            centeredOnce[0] = true;
+                            try {
+                                map.moveCamera(com.amap.api.maps.CameraUpdateFactory.newLatLngZoom(currentLocation, zoomLevel));
+                            } catch (Throwable camEx) {
+                                Log.e(TAG, "[onOK] moveCamera error: " + camEx.getMessage(), camEx);
+                            }
                         }
-                        updateRealTimePath(currentLocation, zoomLevel,aMapLocation.getBearing());
+
+                        if (!realTimePath.isEmpty()) {
+                            double inc = distanceBetween(currentLocation, realTimePath.get(realTimePath.size() - 1));
+                            totalDistance += inc;
+                        }
+                        try {
+                            updateRealTimePath(currentLocation, zoomLevel, aMapLocation.getBearing());
+                        } catch (Throwable upEx) {
+                            Log.e(TAG, "[onOK] updateRealTimePath error: " + upEx.getMessage(), upEx);
+                        }
+
                     } else {
-                        String err = aMapLocation != null ? aMapLocation.getErrorInfo() : "定位返回为空";
-                        Toast.makeText(getContext(), "定位失败: " + err, Toast.LENGTH_SHORT).show();
+                        String err = (aMapLocation != null) ? aMapLocation.getErrorInfo() : "定位返回为空";
+                        Log.e(TAG, "[onFail] " + err);
+                        android.widget.Toast.makeText(getContext(), "定位失败: " + err, android.widget.Toast.LENGTH_SHORT).show();
                     }
                 }
             });
         }
-        locationClient.startLocation();
-        // Once location tracking starts, also handle route preview and guidance
-        if (routeLocations != null && !routeLocations.isEmpty()) {
-            // Convert route locations into LatLng points for the map
 
-            List<LatLng> latLngList = new ArrayList<>();
-            for (Location location : routeLocations) {
-                latLngList.add(new LatLng(location.getLatitude(), location.getLongitude()));
-            }
-
-            // Show route preview
-            drawRoute(latLngList,0xADD8E6);
-            // Start route guidance
-
-            if (latLngList.size() > 1) {
-                //指引方向
-
-
-                // Calculate route distance and other navigation details
-                // Optionally, you could use APIs like AMap's RouteSearch to calculate the walking route.
-                // You could also implement real-time guidance by comparing user position with route waypoints.
-            }
-
+        try {
+            locationClient.startLocation();
+        } catch (Throwable t) {
+            Log.e(TAG, "[startLocation] startLocation exception: " + t.getMessage(), t);
+            android.widget.Toast.makeText(getContext(), "启动定位异常: " + t.getMessage(), android.widget.Toast.LENGTH_SHORT).show();
         }
     }
+
+
+
+
+
 
 
     public double getTotalDistance(){
@@ -360,7 +461,7 @@ public class MapTool extends LinearLayout {
                         lastCameraCenter = currentCenter;
                         lastCenterUpdateTime = System.currentTimeMillis();
                     } else {
-                        if (System.currentTimeMillis() - lastCenterUpdateTime >= 2000) {
+                        if (System.currentTimeMillis() - lastCenterUpdateTime >= 5000) {
                             trackingPaused = false; // 恢复追踪
                         }
                     }
@@ -469,7 +570,7 @@ public class MapTool extends LinearLayout {
                 @Override
                 public int compare(Location o1, Location o2) {
                     // 假设 order 是 int，如果是 getOrder()，请改成 o1.getOrder() - o2.getOrder()
-                    return Integer.compare(o1.getIndex_num(), o2.getIndex_num());
+                    return Integer.compare(o1.getIndexNum(), o2.getIndexNum());
                 }
             });
             ordered_routes.add(ordered);
@@ -483,85 +584,89 @@ public class MapTool extends LinearLayout {
             Toast.makeText(getContext(), "需要至少两个地点", Toast.LENGTH_SHORT).show();
             return;
         }
-        // 等待地图加载完成后再进行路线规划
-        aMap.setOnMapLoadedListener(new AMap.OnMapLoadedListener() {
-            @Override
-            public void onMapLoaded() {
-                final int totalSegments = locations.size() - 1;
-                // 用于保存每段路线的点，按顺序存储
-                final List<List<LatLng>> segmentResults = new ArrayList<>();
-                // 初始化占位
-                for (int i = 0; i < totalSegments; i++) {
-                    segmentResults.add(null);
-                }
-                // 使用数组来保存完成的段数
-                final int[] completedCount = {0};
 
-                // 针对每一段调用异步步行路线规划
-                for (int i = 0; i < totalSegments; i++) {
-                    final int index = i;
-                    final LatLng start = locations.get(i);
-                    final LatLng end = locations.get(i + 1);
-                    final RouteSearch localRouteSearch = new RouteSearch(getContext());
-                    LatLonPoint startPoint = new LatLonPoint(start.latitude, start.longitude);
-                    LatLonPoint endPoint = new LatLonPoint(end.latitude, end.longitude);
-                    RouteSearch.FromAndTo fromAndTo = new RouteSearch.FromAndTo(startPoint, endPoint);
-                    WalkRouteQuery query = new WalkRouteQuery(fromAndTo, RouteSearch.WalkDefault);
-                    localRouteSearch.calculateWalkRouteAsyn(query);
-                    localRouteSearch.setRouteSearchListener(new RouteSearch.OnRouteSearchListener() {
-                        @Override
-                        public void onWalkRouteSearched(WalkRouteResult result, int errorCode) {
-                            List<LatLng> segmentPoints = new ArrayList<>();
-                            if (errorCode == AMapException.CODE_AMAP_SUCCESS && result != null &&
-                                    result.getPaths() != null && !result.getPaths().isEmpty()) {
-                                // 获取第一个规划方案并解码路径
-                                WalkPath walkPath = result.getPaths().get(0);
-                                segmentPoints = decodeWalkPath(walkPath);
-                            } else {
-                                // 如果规划失败，则直接使用直线连接（作为退化方案）
-                                segmentPoints.add(start);
-                                segmentPoints.add(end);
-                            }
-                            // 保存该段结果
-                            segmentResults.set(index, segmentPoints);
-                            completedCount[0]++;
-                            // 如果所有段都返回了，拼接完整路线并绘制
-                            if (completedCount[0] == totalSegments) {
-                                List<LatLng> fullRoute = new ArrayList<>();
-                                for (List<LatLng> seg : segmentResults) {
-                                    // 去掉重复的起点（除第一段）
-                                    if (!fullRoute.isEmpty() && !seg.isEmpty() && fullRoute.get(fullRoute.size()-1).equals(seg.get(0))) {
-                                        fullRoute.addAll(seg.subList(1, seg.size()));
-                                    } else {
-                                        fullRoute.addAll(seg);
-                                    }
+        // 关键：不要再 setOnMapLoadedListener；统一走就绪闸门
+        runWhenMapReady(() -> {
+            final int totalSegments = locations.size() - 1;
+
+            // 占位每段结果
+            final java.util.List<java.util.List<LatLng>> segmentResults = new java.util.ArrayList<>();
+            for (int i = 0; i < totalSegments; i++) segmentResults.add(null);
+            final int[] completed = {0};
+
+            for (int i = 0; i < totalSegments; i++) {
+                final int index = i;
+                final LatLng start = locations.get(i);
+                final LatLng end   = locations.get(i + 1);
+
+                RouteSearch routeSearch = new RouteSearch(getContext());
+                RouteSearch.FromAndTo ft = new RouteSearch.FromAndTo(
+                        new LatLonPoint(start.latitude, start.longitude),
+                        new LatLonPoint(end.latitude,   end.longitude));
+                WalkRouteQuery query = new WalkRouteQuery(ft, RouteSearch.WalkDefault);
+
+                routeSearch.setRouteSearchListener(new RouteSearch.OnRouteSearchListener() {
+                    @Override
+                    public void onWalkRouteSearched(WalkRouteResult result, int errorCode) {
+                        java.util.List<LatLng> seg = new java.util.ArrayList<>();
+
+                        if (errorCode == AMapException.CODE_AMAP_SUCCESS
+                                && result != null
+                                && result.getPaths() != null
+                                && !result.getPaths().isEmpty()) {
+                            WalkPath wp = result.getPaths().get(0);
+                            seg = decodeWalkPath(wp); // 你已有的方法：把步行路径拆成 LatLng 列表
+                        } else {
+                            // 规划失败就直接端点直连，保证至少能看到线
+                            seg.add(start);
+                            seg.add(end);
+                        }
+
+                        segmentResults.set(index, seg);
+
+                        if (++completed[0] == totalSegments) {
+                            // 拼接完整路线，去掉相邻段的重复首尾点
+                            java.util.List<LatLng> full = new java.util.ArrayList<>();
+                            for (int k = 0; k < totalSegments; k++) {
+                                java.util.List<LatLng> s = segmentResults.get(k);
+                                if (s == null || s.isEmpty()) continue;
+                                if (!full.isEmpty() && full.get(full.size() - 1).equals(s.get(0))) {
+                                    full.addAll(s.subList(1, s.size()));
+                                } else {
+                                    full.addAll(s);
                                 }
-                                aMap.addPolyline(new PolylineOptions()
-                                        .addAll(fullRoute)
-                                        .width(10)
-                                        .color(color));
                             }
-                        }
 
-                        @Override
-                        public void onRideRouteSearched(com.amap.api.services.route.RideRouteResult rideRouteResult, int i) {
-                            // 不处理骑行路线
-                        }
+                            // 清理旧的规划线（如果有）
+                            if (planPolyline != null) {
+                                try { planPolyline.remove(); } catch (Throwable ignore) {}
+                                planPolyline = null;
+                            }
 
-                        @Override
-                        public void onBusRouteSearched(com.amap.api.services.route.BusRouteResult result, int errorCode) {
-                            // 不处理公交路线
-                        }
+                            // 画整条路线（不移动相机）
+                            planPolyline = aMap.addPolyline(new PolylineOptions()
+                                    .addAll(full)
+                                    .width(10)
+                                    .color(color)
+                                    .geodesic(true)
+                                    .zIndex(1f));
 
-                        @Override
-                        public void onDriveRouteSearched(com.amap.api.services.route.DriveRouteResult driveRouteResult, int i) {
-                            // 不处理驾车路线
+                            // 回写给 destinRoute，供你的“虚线吸附到路线最近点”逻辑使用
+                            destinRoute = full;
                         }
-                    });
-                }
+                    }
+
+                    @Override public void onBusRouteSearched(com.amap.api.services.route.BusRouteResult r, int ec) {}
+                    @Override public void onDriveRouteSearched(com.amap.api.services.route.DriveRouteResult r, int ec) {}
+                    @Override public void onRideRouteSearched(com.amap.api.services.route.RideRouteResult r, int ec) {}
+                });
+
+                routeSearch.calculateWalkRouteAsyn(query);
             }
         });
     }
+
+
 
 
 
@@ -587,7 +692,7 @@ public class MapTool extends LinearLayout {
     }
 
     public void onCreate() {
-        mapView.onCreate(null);
+        //mapView.onCreate(null);
     }
 
     public void onResume() {
@@ -811,7 +916,15 @@ public class MapTool extends LinearLayout {
     private float sp2px(float sp) {
         return sp * getResources().getDisplayMetrics().scaledDensity;
     }
+    private void runOnUiThreadX(Runnable r) {
+        if (Looper.myLooper() == Looper.getMainLooper()) r.run();
+        else mainHandler.post(r);
+    }
 
+    private void runWhenMapReady(Runnable r) {
+        if (mapReady) runOnUiThreadX(r);
+        else pendingMapTasks.add(r);
+    }
 
 }
 

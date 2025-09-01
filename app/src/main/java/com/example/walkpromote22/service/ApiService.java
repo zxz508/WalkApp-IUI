@@ -4,7 +4,6 @@ import com.example.walkpromote22.data.dto.LocationDTO;
 import com.example.walkpromote22.data.dto.RouteDTO;
 import com.example.walkpromote22.data.dto.StepDTO;
 import com.example.walkpromote22.data.dto.UserDTO;
-import com.example.walkpromote22.data.model.User;
 
 import java.util.List;
 
@@ -13,6 +12,7 @@ import retrofit2.http.Body;
 import retrofit2.http.GET;
 import retrofit2.http.POST;
 import retrofit2.http.Path;
+import retrofit2.http.Query;
 
 public interface ApiService {
     @POST("auth/login")
@@ -34,17 +34,17 @@ public interface ApiService {
 
 
 
-    @POST("routes")
+    @POST("routes/create")
     Call<Long> createRoute(@Body RouteDTO body);        // 返回服务器生成的 routeId
 
     @POST("locations/upload")
     Call<Void> uploadLocations(@Body List<LocationDTO> list);
 
-    @GET("routes/AllRoutes")
-    Call<List<RouteDTO>> getAllRoutes();
+    @GET("routes/by-user")
+    Call<List<RouteDTO>> getRoutesByUserKey(@Query("userKey") String userKey);
 
-    @GET("locations/AllLocations")
-    Call<List<LocationDTO>> getAllLocations();
+    @GET("locations/by-route")
+    Call<List<LocationDTO>> getLocationsByRouteId(@Query("routeId") long routeId);
 
 
 }

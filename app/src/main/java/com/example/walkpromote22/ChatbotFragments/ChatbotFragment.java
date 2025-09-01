@@ -1,14 +1,15 @@
 package com.example.walkpromote22.ChatbotFragments;
 
-import static android.view.View.GONE;
 
+import static com.example.walkpromote22.Manager.RouteSyncManager.createRoute;
+import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitialized;
 
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.generateRoute;
-
+import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
+import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
+import static com.example.walkpromote22.WalkFragments.SmartGuide.buildUserInputs;
 import static com.example.walkpromote22.tool.MapTool.rank;
 import static com.example.walkpromote22.tool.MapTool.trimLocationName;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
@@ -51,32 +52,32 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.amap.api.maps.Projection;
 import com.amap.api.maps.model.BitmapDescriptor;
 import com.amap.api.maps.model.BitmapDescriptorFactory;
+import com.amap.api.maps.model.LatLngBounds;
 import com.amap.api.maps.model.MarkerOptions;
 
-import com.amap.api.location.AMapLocationClient;
-import com.amap.api.location.AMapLocationClientOption;
 import com.amap.api.maps.AMap;
 import com.amap.api.maps.CameraUpdateFactory;
 import com.amap.api.maps.model.CameraPosition;
 import com.amap.api.maps.model.LatLng;
+import com.amap.api.maps.model.Poi;
 import com.amap.api.services.core.LatLonPoint;
 import com.amap.api.services.route.BusRouteResult;
 import com.amap.api.services.route.DriveRouteResult;
 import com.amap.api.services.route.RideRouteResult;
 import com.amap.api.services.route.RouteSearch;
 import com.amap.api.services.route.WalkRouteResult;
-import com.example.walkpromote22.Activities.MainActivity;
+import com.example.walkpromote22.Manager.RouteSyncManager;
+import com.example.walkpromote22.data.dao.StepDao;
+import com.example.walkpromote22.data.database.AppDatabase;
+import com.example.walkpromote22.data.dto.LocationDTO;
+import com.example.walkpromote22.data.model.Route;
+import com.example.walkpromote22.data.model.Step;
 import com.example.walkpromote22.tool.BaiduTranslateHelper;
 import com.example.walkpromote22.tool.MapTool;
 import com.example.walkpromote22.R;
 import com.example.walkpromote22.WalkFragments.WalkFragment;
-import com.example.walkpromote22.data.dao.StepDao;
-import com.example.walkpromote22.data.dao.UserDao;
-import com.example.walkpromote22.data.database.AppDatabase;
 import com.example.walkpromote22.data.model.Location;
-import com.example.walkpromote22.data.model.Step;
-import com.example.walkpromote22.data.model.User;
-import com.example.walkpromote22.tool.WeatherTool;
+import com.example.walkpromote22.tool.UserPreferences;
 import com.github.mikephil.charting.charts.LineChart;
 
 import org.json.JSONArray;
@@ -85,35 +86,41 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
-import java.text.ParseException;
+import java.io.Serializable;
 import java.text.SimpleDateFormat;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class ChatbotFragment extends Fragment {
+
+    private boolean debugAutoRouteOnce = false;
+
+
+    // 最近一次用于上传的“最优路线”与其名称
+    private List<Location> lastRouteForUpload = java.util.Collections.emptyList();
+    private String lastRouteNameForUpload = "";
 
     private static final String TAG = "ChatbotFragment";
     private static final int REQUEST_IMAGE_CAPTURE = 1;
     private static final int REQUEST_CAMERA_PERMISSION = 100;
     // 放在 ChatbotFragment 成员区
 
-
+    private volatile String pendingRouteDescription = null;
     private LinearLayout routeContainer; // 用于显示地图的容器
     // 控件声明
     private EditText userInput;
@@ -126,12 +133,32 @@ public class ChatbotFragment extends Fragment {
     private LatLng userLocation;
     private ChatbotHelper chatbotHelper;
     private Uri photoUri;
-
+    private static AppDatabase appDatabase;
     private String weather;
+    private static String userKey;
+    private RecyclerView rvNav;
+    private EditText etNav;
+    private View btnSendNav;
+    private RecyclerView rvChat;
+    private EditText etChat;
+    private View btnSendChat;
+    LinearLayout chatModeContainer;
+    LinearLayout navigationModeContainer;
+    // ChatbotFragment 字段区
+// 用 volatile 确保路线上一线程写、另一线程读可见；每次赋值成“新的不可变列表”
+    private volatile List<Location> generatedRoute = java.util.Collections.emptyList();
 
 
+    // 放在 ChatbotFragment 字段区
+
+
+
+    // 当前活跃输入区（根据模式切换指向 etChat/etNav、btnSendChat/btnSendNav）
+    private EditText activeInput;
+    private View activeSend;
     // 全局对话历史
     private JSONArray conversationHistory = new JSONArray();
+    private JSONArray localConversationHistory=new JSONArray();
 
     @Nullable
     @Override
@@ -150,7 +177,7 @@ public class ChatbotFragment extends Fragment {
         userInput = view.findViewById(R.id.user_input);
         Button sendButton = view.findViewById(R.id.send_arrow);
         recyclerView = view.findViewById(R.id.recycler_view_messages);
-        routeContainer = view.findViewById(R.id.route_container);
+
 
         // 初始化 RecyclerView
         messageList = new ArrayList<>();
@@ -158,9 +185,42 @@ public class ChatbotFragment extends Fragment {
         recyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
         recyclerView.setAdapter(chatAdapter);
 
+
+        chatModeContainer = view.findViewById(R.id.chat_mode_container);
+        navigationModeContainer = view.findViewById(R.id.navigation_mode_container);
+        chatModeContainer.setVisibility(View.VISIBLE);
+        navigationModeContainer.setVisibility(View.GONE);
+        rvChat = chatModeContainer.findViewById(R.id.recycler_view_messages);
+        etChat = chatModeContainer.findViewById(R.id.user_input);
+        btnSendChat = chatModeContainer.findViewById(R.id.send_arrow);
+        rvNav = navigationModeContainer.findViewById(R.id.recycler_view_messages);
+        etNav = navigationModeContainer.findViewById(R.id.user_input);
+        btnSendNav = navigationModeContainer.findViewById(R.id.send_arrow);
+
+
+        // onViewCreated 里，拿到控件之后立刻设置两套 LM（推荐做法）
+        rvChat.setLayoutManager(new LinearLayoutManager(getContext()));
+        rvChat.setAdapter(chatAdapter);
+        rvChat.setItemAnimator(null);
+
+        rvNav.setLayoutManager(new LinearLayoutManager(getContext())); // ★ 给导航区的 RV 也设置 LM
+        rvNav.setItemAnimator(null);
+
+
         // 初始化对话历史
+        if (chatAdapter == null) {
+            chatAdapter = new ChatAdapter(messageList);
+        }
+        // 默认处于“聊天模式”
+        rvChat.setAdapter(chatAdapter);
+        rvChat.setItemAnimator(null); // 可选：避免频繁切换抖动
+        activeInput = etChat;
+        activeSend = btnSendChat;
+
+        // 绑定发送逻辑到“当前活跃输入区”
+        bindComposer(activeInput, activeSend);
         try {
-            conversationHistory.put(new JSONObject()
+            localConversationHistory.put(new JSONObject()
                     .put("role", "system")
                     .put("content", "You are a helpful assistant."));
         } catch (JSONException e) {
@@ -170,7 +230,7 @@ public class ChatbotFragment extends Fragment {
         View initialDialog = view.findViewById(R.id.initial_dialog);
         CardView weatherCard = view.findViewById(R.id.weather_card);
         TextView weatherContent = view.findViewById(R.id.weather_content);
-
+        appDatabase     = AppDatabase.getDatabase(requireContext());
 
         // ✅ 提前获取定位信息（只获取一次并存入 userLocation）and 查询天气
      /*   prefs.edit().putString("location_lat", String.valueOf(location.latitude)).apply();
@@ -179,6 +239,13 @@ public class ChatbotFragment extends Fragment {
         SharedPreferences prefs = requireContext().getSharedPreferences("AppData", Context.MODE_PRIVATE);
         weather = prefs.getString("weather", null);
         userLocation=new LatLng(Double.parseDouble(Objects.requireNonNull(prefs.getString("location_lat", null))),Double.parseDouble(Objects.requireNonNull(prefs.getString("location_long", null))));
+        UserPreferences userPref = new UserPreferences(requireContext());
+        userKey=userPref.getUserKey();
+
+
+
+
+
 
 
         if (weather != null) {
@@ -217,28 +284,34 @@ public class ChatbotFragment extends Fragment {
                 weatherContent.setVisibility(View.GONE);
                 weatherCard.setVisibility(View.GONE);
                 userInput.setText("");
-
+                ZonedDateTime now = ZonedDateTime.now();
+                String formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
                 // 准备 system promote
-                String promote ="You are an route planing assistant for user and you can get extra information's from API rather than user. "+
+                String promote ="You are an route planing assistant in English for user and you can get extra information's from API rather than user, ****don't mention any longitude and latitude in your conversation**** "+
                             "You should begin with questions like: To create the best route, I need a bit of info:" + "How long do you want to walk (time or distance)?" + "Do you prefer quiet streets, scenic spots, or lively areas?"+
-                            "Following are very important:When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON" +
+                            "Following are very important:*****" +
+                            "When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON (respond {Map_API_Certain} before if user has a clear destination)" +
                             "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain}"+
-                            "When you want to show user the route drawing in map, you just respond: {Drawing_API} and API will draw the route. " +
-                            "When you want get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
-                            "Here's a sample conversation1 I'd like you to have with your users:Sample Conversation1\n" +
-                            "\n" +
-                            "App: 👋 Hi there! Ready for a refreshing walk today?\n" +
+                            "When you want to show user the route drawing in map, you should ask user to wait a second and respond with: {Drawing_API} and API will draw the route. " +
+                            "When you want to get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
+                            "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
+                            "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}"+
+                            "The time now is"+formatted+", and the weather now is"+weather+
+                            "You can only use token twice in a row without the user requesting it"+
+                            "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
+                            "Here's a sample conversation1 I'd like you to have with your users(Only for sample,you should have different talk in different weather,time and so on):" +
+                            "Sample Conversation1\n" +
                             "User: Generate a suitable route for me\n" +
                             "App: Great! To create the best route, I need a bit of info:\n" +
                             "App:How long do you want to walk (time or distance)?\n" +
                             "App:Do you prefer quiet streets, scenic spots, or lively areas?\n" +
                             "User: Maybe around 30 minutes. And I’d like a scenic route.\n" +
-                            "App: Got it ✅ Checking nearby parks, riversides, and trails… {Map_API_Route}.(using Map API to get a route satisfying user requirement ).\n" +
-                            "App: 🌿 I’ve found a peaceful riverside loop near you. It’s about 2.5 km and should take ~30 minutes. Currently, it’s not too crowded, and the sunset views are great right now.\n" +
+                            "App: Got it ✅ Checking nearby parks, riversides, and trails… please wait a second. {Map_API_Route}.\n" +
+                            "App: {Drawing_API}🌿 I’ve found a peaceful riverside loop near you. I will show you the route on map now, please wait a second. It’s about 2.5 km and should take ~30 minutes. Currently, it’s not too crowded, and the sunset views are great right now.\n" +
                             "User: Sounds perfect.\n" +
-                            "App: {Drawing_API} Awesome! I’ll guide you step by step. Let’s start at Oakwood Park entrance. Ready to begin?." +
+                            "App:  Awesome! I’ll guide you step by step. Let’s start at Oakwood Park entrance. Ready to begin?." +
                             "User: Yes.\n" +
-                            "App: 🚶‍♂️ Let’s go! First, walk straight down Oakwood Lane for 300 meters. 🌟 You’re off to a strong start—did you know a 30-minute walk can boost your mood for up to 12 hours?\n" +
+                            "App: {Navigation_API}"+
                             "User (midway): I’m getting a bit tired.\n" +
                             "App: You’re doing great! 💪 You’ve already covered 1.4 km—over halfway there. How about slowing down for a minute to enjoy the view by the lake?\n" +
                             "User (later): Okay, I’m back on track.\n" +
@@ -254,11 +327,30 @@ public class ChatbotFragment extends Fragment {
                             "App:OK, I have found several KFC around you. Which specifically you aim at?\n"+
                             "User:The one around my home"+
                             "App:Got it, generating a route to it.{Map_API_Route}"+
-                            "App:{Drawing_API} I’ll guide you step by step.";
-
+                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
+                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
+                            "User:Yes, please"+
+                            "App:{Navigation_API}";
 
                 // 把 promote 放到首位，且只插一次
-                conversationHistory = ensureSystemPromote(conversationHistory, promote);
+                // ==== 修改点 1：更新 localConversationHistory ====
+                localConversationHistory = ensureSystemPromote(localConversationHistory, promote);
+                try {
+                    localConversationHistory.put(new JSONObject()
+                            .put("role", "user")
+                            .put("content", userMessage));
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+
+                // ==== 修改点 2：conversationHistory 仅保存全局上下文 ====
+                try {
+                    conversationHistory.put(new JSONObject()
+                            .put("role", "user")
+                            .put("content", userMessage));
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
 
                 // 发送并处理工具触发
                 sendWithPromoteAndTooling(userMessage);
@@ -312,14 +404,13 @@ public class ChatbotFragment extends Fragment {
         final String lastUserMsg = userMessage; // 本轮用户输入
 
         // —— 聚合“历史所有对话（含 user & assistant） + 本轮用户输入”供 generateRoute 使用 ——
-        // 需求：标注是谁说的，并清理助手里的令牌/回执/代码块/裸 JSON
         final String dialogForRoute;
         {
             StringBuilder sb = new StringBuilder();
             try {
-                if (conversationHistory != null) {
-                    for (int i = 0; i < conversationHistory.length(); i++) {
-                        org.json.JSONObject it = conversationHistory.optJSONObject(i);
+                if (localConversationHistory!= null) {
+                    for (int i = 0; i < localConversationHistory.length(); i++) {
+                        org.json.JSONObject it = localConversationHistory.optJSONObject(i);
                         if (it == null) continue;
                         String role = it.optString("role", "");
                         if (!"user".equals(role) && !"assistant".equals(role)) continue; // 跳过 system
@@ -358,40 +449,76 @@ public class ChatbotFragment extends Fragment {
 
         // ===== 触发令牌（支持两种写法：{Token} 与 Request:{Token}）=====
         final int CI = java.util.regex.Pattern.CASE_INSENSITIVE;
-        // 新写法：花括号
-        final java.util.regex.Pattern P_ROUTE_BRACE   = java.util.regex.Pattern.compile("\\{\\s*Map_API_Route\\s*\\}", CI);
-        final java.util.regex.Pattern P_CERTAIN_BRACE = java.util.regex.Pattern.compile("\\{\\s*Map_API_Certain\\s*\\}", CI);
-        final java.util.regex.Pattern P_DRAW_BRACE    = java.util.regex.Pattern.compile("\\{\\s*Drawing_API\\s*\\}", CI);
-        final java.util.regex.Pattern P_STEP_BRACE    = java.util.regex.Pattern.compile("\\{\\s*StepData_API\\s*\\}", CI);
-        // 兼容旧写法：Request:{...}
-        final java.util.regex.Pattern P_ROUTE_REQ     = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Route\\s*\\}", CI);
-        final java.util.regex.Pattern P_CERTAIN_REQ   = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Certain\\s*\\}", CI);
-        final java.util.regex.Pattern P_DRAW_REQ      = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Drawing_API\\s*\\}", CI);
-        final java.util.regex.Pattern P_STEP_REQ      = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*StepData_API\\s*\\}", CI);
-        // 进一步兼容：老的 Map_API / Map_API_All 统一当作 Route
-        final java.util.regex.Pattern P_ROUTE_OLD_REQ = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
-        final java.util.regex.Pattern P_ROUTE_OLD_BR  = java.util.regex.Pattern.compile("\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
+        final Pattern P_ROUTE_BRACE   = Pattern.compile("\\{\\s*Map_API_Route\\s*\\}", CI);
+        final Pattern P_CERTAIN_BRACE = Pattern.compile("\\{\\s*Map_API_Certain\\s*\\}", CI);
+        final Pattern P_DRAW_BRACE    = Pattern.compile("\\{\\s*Drawing_API\\s*\\}", CI);
+        final Pattern P_STEP_BRACE    = Pattern.compile("\\{\\s*StepData_API\\s*\\}", CI);
+        final Pattern P_HISTORY_BRACE = Pattern.compile("\\{\\s*User_History\\s*\\}", CI);
+        final Pattern P_NAV_BRACE     = Pattern.compile("\\{\\s*Navigation_API\\s*\\}", CI);
+
+        final Pattern P_ROUTE_REQ     = Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Route\\s*\\}", CI);
+        final Pattern P_CERTAIN_REQ   = Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Certain\\s*\\}", CI);
+        final Pattern P_DRAW_REQ      = Pattern.compile("Request\\s*:\\s*\\{\\s*Drawing_API\\s*\\}", CI);
+        final Pattern P_STEP_REQ      = Pattern.compile("Request\\s*:\\s*\\{\\s*StepData_API\\s*\\}", CI);
+        final Pattern P_HISTORY_REQ   = Pattern.compile("Request\\s*:\\s*\\{\\s*User_History\\s*\\}", CI);
+        final Pattern P_NAV_REQ       = Pattern.compile("Request\\s*:\\s*\\{\\s*Navigation_API\\s*\\}", CI);
+        final Pattern P_ROUTE_OLD_REQ = Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
+        final Pattern P_ROUTE_OLD_BR  = Pattern.compile("\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
 
         // 互相引用的回调容器
-        final java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> handleRef = new java.util.concurrent.atomic.AtomicReference<>();
-        final java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef   = new java.util.concurrent.atomic.AtomicReference<>();
+        final AtomicReference<java.util.function.Consumer<String>> handleRef = new java.util.concurrent.atomic.AtomicReference<>();
+        final AtomicReference<java.util.function.Consumer<String>> feedRef   = new java.util.concurrent.atomic.AtomicReference<>();
 
         // 把工具结果回喂给 GPT（再次走 LLM）
         feedRef.set((String toolPayload) -> {
-            if (apiHops.incrementAndGet() > MAX_API_HOPS) {
-                requireActivity().runOnUiThread(() -> addChatMessage("⚠️ 已达到自动调用上限。", false));
-                return;
+            // === 新增：在发送前，把工具回执写入 全局 & 本地 & 当前 history ===
+
+            try {
+                org.json.JSONObject toolMsg = new org.json.JSONObject()
+                        .put("role", "assistant")
+                        .put("content", toolPayload == null ? "" : toolPayload);
+
+                // 全局
+                if (conversationHistory != null) {
+                    conversationHistory.put(toolMsg);
+                }
+                // 本地
+                if (localConversationHistory != null) {
+                    // 深拷贝一份，避免同一对象被多个 JSONArray 共享
+                    localConversationHistory.put(new org.json.JSONObject(toolMsg.toString()));
+                }
+            } catch (Exception ignore) {}
+
+            // 选择发送用的 history：优先全局，其次传入的
+            final JSONArray historyToSend = localConversationHistory;
+
+            if (apiHops.incrementAndGet() == MAX_API_HOPS) {
+                apiHops.set(0);
+                String promote = "The method called by your token has been implemented, but you can no longer call the token continuously. Please ask if you want to invoke tokens later"
+                        + (toolPayload == null ? "" : toolPayload);
+
+                chatbotHelper.sendMessage(promote, historyToSend, new ChatbotResponseListener() {
+                    @Override public void onResponse(String reply2) {
+                        java.util.function.Consumer<String> h = handleRef.get();
+                        if (h != null) h.accept(reply2);
+
+                    }
+                    @Override public void onFailure(String error) {
+                    }
+                });
+            } else {
+                chatbotHelper.sendMessage(toolPayload == null ? "" : toolPayload, historyToSend, new ChatbotResponseListener() {
+                    @Override public void onResponse(String reply2) {
+                        Log.e(TAG,"repley1231="+reply2);
+                        java.util.function.Consumer<String> h = handleRef.get();
+                        if (h != null) h.accept(reply2);
+                    }
+                    @Override public void onFailure(String error) {
+                        requireActivity().runOnUiThread(() ->
+                                addChatMessage("Failed to connect to Chatbot: " + error, false));
+                    }
+                });
             }
-            chatbotHelper.sendMessage(toolPayload, conversationHistory, new ChatbotResponseListener() {
-                @Override public void onResponse(String reply2) {
-                    java.util.function.Consumer<String> h = handleRef.get();
-                    if (h != null) h.accept(reply2);
-                }
-                @Override public void onFailure(String error) {
-                    requireActivity().runOnUiThread(() ->
-                            addChatMessage("Failed to connect to Chatbot: " + error, false));
-                }
-            });
         });
 
         // 统一处理 GPT 回复（识别触发、清理令牌、调用 API、回喂）
@@ -401,14 +528,14 @@ public class ChatbotFragment extends Fragment {
                 return;
             }
 
-            // —— 是否包含各类触发 ——（支持两种写法）
             boolean needRoute   = P_ROUTE_BRACE.matcher(replyRaw).find()   || P_ROUTE_REQ.matcher(replyRaw).find()
                     || P_ROUTE_OLD_BR.matcher(replyRaw).find() || P_ROUTE_OLD_REQ.matcher(replyRaw).find();
             boolean needCertain = P_CERTAIN_BRACE.matcher(replyRaw).find() || P_CERTAIN_REQ.matcher(replyRaw).find();
             boolean needDraw    = P_DRAW_BRACE.matcher(replyRaw).find()    || P_DRAW_REQ.matcher(replyRaw).find();
             boolean needStep    = P_STEP_BRACE.matcher(replyRaw).find()    || P_STEP_REQ.matcher(replyRaw).find();
+            boolean needHistory = P_HISTORY_BRACE.matcher(replyRaw).find() || P_HISTORY_REQ.matcher(replyRaw).find();
+            boolean needNav     = P_NAV_BRACE.matcher(replyRaw).find()     || P_NAV_REQ.matcher(replyRaw).find();
 
-            // —— 展示给用户的可读文本：移除所有令牌（两种写法都清理） ——
             String visible = replyRaw;
             visible = P_ROUTE_BRACE.matcher(visible).replaceAll("");
             visible = P_CERTAIN_BRACE.matcher(visible).replaceAll("");
@@ -420,172 +547,74 @@ public class ChatbotFragment extends Fragment {
             visible = P_STEP_REQ.matcher(visible).replaceAll("");
             visible = P_ROUTE_OLD_BR.matcher(visible).replaceAll("");
             visible = P_ROUTE_OLD_REQ.matcher(visible).replaceAll("");
+            visible = P_HISTORY_BRACE.matcher(visible).replaceAll("");
+            visible = P_HISTORY_REQ.matcher(visible).replaceAll("");
+            visible = P_NAV_BRACE.matcher(visible).replaceAll("");
+            visible = P_NAV_REQ.matcher(visible).replaceAll("");
             visible = visible.replaceAll("\\n{3,}", "\n\n").trim();
+
             if (!visible.isEmpty()) {
                 String finalVisible = visible;
                 requireActivity().runOnUiThread(() -> addChatMessage(finalVisible, false));
             }
 
-            // —— Map_API_Certain / Map_API_Route / Step 统一放后台线程顺序执行 ——
-            // —— Map_API_Certain / Map_API_Route / Step 统一放后台线程顺序执行 ——
-            if (needCertain || needRoute || needStep) {
-                final boolean alsoDraw = needDraw; // 当前这条回复是否还要求绘制
+            if (needHistory) {
+                handleHistoryRequest(appDatabase, userKey, feedRef);
+                return;
+            }
+            if (needCertain) {
+                handleCertainRequest(lastUserMsg, lastCertainListRef, feedRef);
+                return;
+            }
+            if (needRoute) {
+                handleRouteRequest(lastUserMsg, dialogForRoute, lastCertainListRef,  feedRef);
+                return;
+            }
+            if (needStep) {
+                handleStepRequest(feedRef);
+                return;
+            }
+            if (needNav) {
+                Log.e(TAG, "Navigation_API triggered");
+
                 new Thread(() -> {
-                    try {
-                        // 1) {Map_API_Certain}：抽取“特定名字 POI 集合”（非路线）→ 直接缓存原始数组 → 回喂
-                        if (needCertain) {
-                            org.json.JSONArray poiArray;
-                            try {
-                                // ✅ 只用“上一句用户输入”
-                                poiArray = RouteGeneration.getCoreLocationsFromRequirement(lastUserMsg);
-                            } catch (Exception ex) {
-                                Log.e(TAG, "Map_API_Certain 调用失败：", ex);
-                                poiArray = new org.json.JSONArray();
-                            }
-                            // 直接缓存（不打标签）
-                            lastCertainListRef.set(poiArray);
+                    final long deadline = android.os.SystemClock.uptimeMillis() + 1500; // 最多等 1.5s
+                    List<Location> r;
+                    do {
+                        r = generatedRoute;  // 你已声明为 volatile
+                        if (r != null && !r.isEmpty()) break;
+                        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+                    } while (android.os.SystemClock.uptimeMillis() < deadline);
 
-                            String payloadCertain = "API_Result:{Map_API_Certain}\n" + poiArray.toString();
-                            java.util.function.Consumer<String> f = feedRef.get();
-                            if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadCertain));
-                        }
-
-                        // 2) {Map_API_Route}：基于“上一步缓存 + 本轮输入中的名称匹配”确定目的地 → 生成路线
-                        if (needRoute) {
-                            org.json.JSONArray poiList = lastCertainListRef.get();
-                            org.json.JSONObject chosen = null;
-
-                            if (poiList != null && poiList.length() > 0) {
-                                String msg = (lastUserMsg == null) ? "" : lastUserMsg;
-
-                                // 2.1 名称包含（不区分大小写）
-                                for (int i = 0; i < poiList.length(); i++) {
-                                    org.json.JSONObject o = poiList.optJSONObject(i);
-                                    if (o == null) continue;
-                                    String nm = o.optString("name", "");
-                                    if (!nm.isEmpty() && msg.toLowerCase(java.util.Locale.ROOT).contains(nm.toLowerCase(java.util.Locale.ROOT))) {
-                                        chosen = o; break;
-                                    }
-                                }
-
-                                // 2.2 模糊匹配：去空格/符号再比对
-                                if (chosen == null && !msg.isEmpty()) {
-                                    String normMsg = msg.replaceAll("[\\s\\p{Punct}]+","").toLowerCase(java.util.Locale.ROOT);
-                                    for (int i = 0; i < poiList.length(); i++) {
-                                        org.json.JSONObject o = poiList.optJSONObject(i);
-                                        if (o == null) continue;
-                                        String nm = o.optString("name", "");
-                                        String normNm = nm.replaceAll("[\\s\\p{Punct}]+","").toLowerCase(java.util.Locale.ROOT);
-                                        if (!normNm.isEmpty() && normMsg.contains(normNm)) { chosen = o; break; }
-                                    }
-                                }
-
-                                // 2.3 仍无 → 默认取第一个
-                                if (chosen == null) chosen = poiList.optJSONObject(0);
-                            }
-
-                            // 2.4 生成“路线”并保存 —— ✅ 用 dialogForRoute（历史全部对话）
-                            List<Location> route = null;
-                            try {
-                                if (chosen != null) {
-                                    String hint = String.format(java.util.Locale.US,
-                                            "\n[ROUTE_TARGET] name=%s; lat=%.6f; lng=%.6f",
-                                            chosen.optString("name",""),
-                                            chosen.optDouble("latitude", 0d),
-                                            chosen.optDouble("longitude", 0d));
-                                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute + hint);
-                                } else {
-                                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
-                                }
-                            } catch (Exception e) {
-                                Log.e(TAG, "generateRoute failed: " + e.getMessage());
-                            }
-                            lastRouteRef.set(route);
-
-                            // 回喂“路线 JSON”
-                            org.json.JSONArray routeArr = new org.json.JSONArray();
-                            if (route != null) {
-                                for (Location L : route) {
-                                    org.json.JSONObject o = new org.json.JSONObject();
-                                    o.put("name", L.getName());
-                                    o.put("latitude", L.getLatitude());
-                                    o.put("longitude", L.getLongitude());
-                                    routeArr.put(o);
-                                }
-                            }
-                            String payloadRoute = "API_Result:{Map_API_Route}\n" + routeArr.toString();
-                            java.util.function.Consumer<String> f = feedRef.get();
-                            if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
-
-                            // 同条要求绘制 → 直接画并告知完成
-                            if (alsoDraw) {
-                                List<Location> r = lastRouteRef.get();
-                                if (r != null && !r.isEmpty()) {
-                                    List<Location> finalR = r;
-                                    requireActivity().runOnUiThread(() -> {
-                                        try { addBotRouteMessage(Collections.singletonList(finalR)); } catch (Exception e) { throw new RuntimeException(e); }
-                                        java.util.function.Consumer<String> f2 = feedRef.get();
-                                        if (f2 != null) f2.accept("API_Done:{Drawing_API}");
-                                    });
-                                } else {
-                                    requireActivity().runOnUiThread(() ->
-                                            addChatMessage("绘制失败：暂无可用路线。", false));
-                                }
-                            }
-                        }
-
-                        // 3) {StepData_API}：返回过去一周步数（此处留空数组占位，等你接健康数据后替换）
-                        if (needStep) {
-                            org.json.JSONArray steps = new org.json.JSONArray();
-                            // TODO: 接入你的步数来源（例如 Health Connect/服务端）
-                            // 期望格式例：[{ "date":"2025-08-10", "steps":5234 }, ... 7 条]
-                            String payloadStep = "API_Result:{StepData_API}\n" + steps.toString();
-                            java.util.function.Consumer<String> f = feedRef.get();
-                            if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadStep));
-                        }
-                    } catch (Exception e) {
-                        requireActivity().runOnUiThread(() ->
-                                addChatMessage("工具处理失败：" + e.getMessage(), false));
-                    }
-                }).start();
-                return;
-            }
-
-
-            // 只请求绘制：需要已有“路线”；没有则先生成（✅ 用 dialogForRoute）
-            if (needDraw) {
-                List<Location> r = lastRouteRef.get();
-                if (r == null || r.isEmpty()) {
-                    new Thread(() -> {
-                        try {
-                            List<Location> route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
-                            lastRouteRef.set(route);
-                            requireActivity().runOnUiThread(() -> {
-                                try { addBotRouteMessage(Collections.singletonList(route)); } catch (Exception e) { throw new RuntimeException(e); }
-                                java.util.function.Consumer<String> f = feedRef.get();
-                                if (f != null) f.accept("API_Done:{Drawing_API}");
-                            });
-                        } catch (Exception e) {
-                            requireActivity().runOnUiThread(() ->
-                                    addChatMessage("绘制失败（无可用路线）：" + e.getMessage(), false));
-                        }
-                    }).start();
-                } else {
+                    final List<Location> finalRoute = r;
                     requireActivity().runOnUiThread(() -> {
-                        try { addBotRouteMessage(Collections.singletonList(r)); } catch (Exception e) { throw new RuntimeException(e); }
-                        java.util.function.Consumer<String> f = feedRef.get();
-                        if (f != null) f.accept("API_Done:{Drawing_API}");
+                        if (finalRoute == null || finalRoute.isEmpty()) {
+                            // 等不到就温和降级（可自定义 UI 提示/直接返回）
+                           Log.e(TAG,"路线尚未生成就调用了导航");
+                            return;
+                        }
+                        try {
+                            handleNavigationRequest(finalRoute);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
                     });
-                }
+                }).start();
+
                 return;
             }
 
+            if (needDraw) {
+                handleDrawRequest(dialogForRoute, lastRouteRef, feedRef);
+                return;
+            }
             // 无任何工具触发：只展示自然语言
         });
 
         // 首次把用户消息发给 GPT
-        chatbotHelper.sendMessage(userMessage, conversationHistory, new ChatbotResponseListener() {
+        chatbotHelper.sendMessage(userMessage, localConversationHistory, new ChatbotResponseListener() {
             @Override public void onResponse(String reply) {
+                Log.e(TAG, "123reply"+reply);
                 java.util.function.Consumer<String> h = handleRef.get();
                 if (h != null) h.accept(reply);
             }
@@ -596,178 +625,288 @@ public class ChatbotFragment extends Fragment {
         });
     }
 
-    private void showWeekReport(){
 
-            String message = "My exercise report for this week";
-            addChatMessage(message, true);
-            new Thread(() -> {
-                // 获取用户标识
-                String userKey = requireContext().getSharedPreferences("user_prefs", Context.MODE_PRIVATE)
-                        .getString("USER_KEY", null);
-                AppDatabase db = AppDatabase.getDatabase(getContext());
-                StepDao stepDao = db.stepDao();
-                UserDao userDao = db.userDao();
 
-                // 获取当前用户体重（kg），若获取失败则默认70kg
-                float weight = 70f;
-                try {
-                    weight = userDao.getUserByKey(userKey).getWeight();
-                } catch (Exception e) {
-                    e.printStackTrace();
+
+
+    private void handleHistoryRequest(AppDatabase appDatabase,
+                                      String userKey,
+                                      AtomicReference<Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                List<Route> historyRoutes = appDatabase.routeDao().getRoutesByUserKey(userKey);
+                JSONArray historyArr = new JSONArray();
+                int i = 0;
+                for (Route r : historyRoutes) {
+                    i++;
+                    if (i >= 10) break;
+                    JSONObject obj = new JSONObject();
+                    obj.put("id", r.getId());
+                    obj.put("name", r.getName());
+                    obj.put("createdAt", r.getCreatedAt());
+                    obj.put("description", r.getDescription());
+                    historyArr.put(obj);
                 }
+                String payloadHistory = "API_Result:{User_History}\n" + historyArr.toString();
+                Consumer<String> f = feedRef.get();
+                if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadHistory));
 
-                // 获取当前日期和过去7天（含今天）的时间范围
-                Calendar calendar = Calendar.getInstance();
-                Date today = calendar.getTime();
-                calendar.add(Calendar.DAY_OF_YEAR, -6);  // 过去7天
-                Date startDate = calendar.getTime();
-                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-
-                // 使用 LinkedHashMap 保持日期顺序记录每天的步数、距离和卡路里
-                LinkedHashMap<String, Integer> stepsMap = new LinkedHashMap<>();
-                LinkedHashMap<String, Float> distanceMap = new LinkedHashMap<>();
-                LinkedHashMap<String, Float> calorieMap = new LinkedHashMap<>();
-
-                // 循环获取过去7天的记录
-                Calendar tempCal = Calendar.getInstance();
-                tempCal.setTime(startDate);
-                while (!tempCal.getTime().after(today)) {
-                    String dateStr = sdf.format(tempCal.getTime());
-                    Step stepRecord = stepDao.getStepByDate(userKey, dateStr);
-                    if (stepRecord != null) {
-                        int steps = stepRecord.getStepCount();
-                        float distance = stepRecord.getDistance(); // 单位：米
-                        // 计算距离转换为公里
-                        float distanceKm = distance / 1000f;
-                        // 根据公式计算卡路里
-                        float calories = distanceKm * weight * 1.036f;
-
-                        stepsMap.put(dateStr, steps);
-                        distanceMap.put(dateStr, distance);
-                        calorieMap.put(dateStr, calories);
-                    } else {
-                        stepsMap.put(dateStr, 0);
-                        distanceMap.put(dateStr, 0f);
-                        calorieMap.put(dateStr, 0f);
-                    }
-                    tempCal.add(Calendar.DAY_OF_YEAR, 1);
-                }
-
-
-
-                // 在主线程更新 UI，展示汇总报告
-                // 在主线程更新 UI，展示汇总报告
+            } catch (Exception e) {
                 requireActivity().runOnUiThread(() ->
-                        addWeeklyExerciseChart(stepsMap, distanceMap, calorieMap)
-                );
-
-
-                // 拼接完整消息，发送给 GPT 进行数据分析（要求答案在 100 tokens 内）
-                String fullMessage = "You are a helpful training assistant in a walking promoting application, based on the following weekly exercise data:\n"
-                        + getTrainingData()
-                        + "Please analyze my performance and suggest improvements.";
-                requireActivity().runOnUiThread(() -> {
-                    chatbotHelper.sendMessage(fullMessage, conversationHistory, new ChatbotResponseListener() {
-                        @Override
-                        public void onResponse(String reply) {
-                            addChatMessage(reply, false);
-                        }
-                        @Override
-                        public void onFailure(String error) {
-                            addChatMessage("Failed to connect to Chatbot: " + error, false);
-                        }
-                    });
-                });
-            }).start();
-    }
-
-
-
-
-
-
-    private String getTrainingData(){
-        String userKey = requireContext().getSharedPreferences("user_prefs", Context.MODE_PRIVATE)
-                .getString("USER_KEY", null);
-        AppDatabase db = AppDatabase.getDatabase(getContext());
-        StepDao stepDao = db.stepDao();
-        UserDao userDao = db.userDao();
-
-        // 获取当前用户体重（kg），若获取失败则默认70kg
-        float weight = 70f;
-        try {
-            weight = userDao.getUserByKey(userKey).getWeight();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        // 获取当前日期和过去7天（含今天）的时间范围
-        Calendar calendar = Calendar.getInstance();
-        Date today = calendar.getTime();
-        calendar.add(Calendar.DAY_OF_YEAR, -6);  // 过去7天
-        Date startDate = calendar.getTime();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-
-        // 使用 LinkedHashMap 保持日期顺序记录每天的步数、距离和卡路里
-        LinkedHashMap<String, Integer> stepsMap = new LinkedHashMap<>();
-        LinkedHashMap<String, Float> distanceMap = new LinkedHashMap<>();
-        LinkedHashMap<String, Float> calorieMap = new LinkedHashMap<>();
-
-        // 循环获取过去7天的记录
-        Calendar tempCal = Calendar.getInstance();
-        tempCal.setTime(startDate);
-        while (!tempCal.getTime().after(today)) {
-            String dateStr = sdf.format(tempCal.getTime());
-            Step stepRecord = stepDao.getStepByDate(userKey, dateStr);
-            if (stepRecord != null) {
-                int steps = stepRecord.getStepCount();
-                float distance = stepRecord.getDistance(); // 单位：米
-                // 计算距离转换为公里
-                float distanceKm = distance / 1000f;
-                // 根据公式计算卡路里
-                float calories = distanceKm * weight * 1.036f;
-
-                stepsMap.put(dateStr, steps);
-                distanceMap.put(dateStr, distance);
-                calorieMap.put(dateStr, calories);
-            } else {
-                stepsMap.put(dateStr, 0);
-                distanceMap.put(dateStr, 0f);
-                calorieMap.put(dateStr, 0f);
+                        addChatMessage("获取历史失败：" + e.getMessage(), false));
             }
-            tempCal.add(Calendar.DAY_OF_YEAR, 1);
-        }
+        }).start();
+    }
+    private void handleRouteRequest(String lastUserMsg,
+                                    String dialogForRoute,
+                                    AtomicReference<JSONArray> lastCertainListRef,
+                                    AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                JSONArray poiList = lastCertainListRef.get();
+                JSONObject chosen = null;
 
-        // 构建汇总信息字符串
-        StringBuilder summaryStr = new StringBuilder();
-        summaryStr.append("<b>Weekly Exercise Summary</b><br>");
-        summaryStr.append("<table border='1' cellspacing='0' cellpadding='4'>");
-        summaryStr.append("<tr><th>Date</th><th>Steps</th><th>Distance (km)</th><th>Calories (cal)</th></tr>");
-        for (String date : stepsMap.keySet()) {
-            summaryStr.append("<tr>")
-                    .append("<td>").append(date).append("</td>")
-                    .append("<td>").append(stepsMap.get(date)).append("</td>")
-                    .append("<td>").append(String.format("%.2f", distanceMap.get(date) / 1000.0)).append("</td>")
-                    .append("<td>").append(String.format("%.2f", calorieMap.get(date))).append("</td>")
-                    .append("</tr>");
-        }
-        summaryStr.append("</table>");
+                if (poiList != null && poiList.length() > 0) {
+                    String msg = (lastUserMsg == null) ? "" : lastUserMsg;
+
+                    // 2.1 名称包含（不区分大小写）
+                    for (int i = 0; i < poiList.length(); i++) {
+                        JSONObject o = poiList.optJSONObject(i);
+                        if (o == null) continue;
+                        String nm = o.optString("name", "");
+                        if (!nm.isEmpty() && msg.toLowerCase(Locale.ROOT).contains(nm.toLowerCase(Locale.ROOT))) {
+                            chosen = o; break;
+                        }
+                    }
+
+                    // 2.2 模糊匹配
+                    if (chosen == null && !msg.isEmpty()) {
+                        String normMsg = msg.replaceAll("[\\s\\p{Punct}]+","").toLowerCase(Locale.ROOT);
+                        for (int i = 0; i < poiList.length(); i++) {
+                            JSONObject o = poiList.optJSONObject(i);
+                            if (o == null) continue;
+                            String nm = o.optString("name", "");
+                            String normNm = nm.replaceAll("[\\s\\p{Punct}]+","").toLowerCase(Locale.ROOT);
+                            if (!normNm.isEmpty() && normMsg.contains(normNm)) { chosen = o; break; }
+                        }
+                    }
+
+                    // 2.3 仍无 → 默认取第一个
+                    if (chosen == null) chosen = poiList.optJSONObject(0);
+                }
+
+                // 2.4 生成“路线”
+                List<Location> route;
+                if (chosen != null) {
+                    String hint = String.format(Locale.US,
+                            "\n[ROUTE_TARGET] name=%s; lat=%.6f; lng=%.6f",
+                            chosen.optString("name",""),
+                            chosen.optDouble("latitude", 0d),
+                            chosen.optDouble("longitude", 0d));
+                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute + hint);
+                } else {
+                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
+                }
+
+                // === 写入全局 generatedRoute（用不可变副本，避免并发写） ===
+                if (route == null) {
+                    generatedRoute = java.util.Collections.emptyList();
+                } else {
+                    generatedRoute = java.util.Collections.unmodifiableList(new java.util.ArrayList<>(route));
+                }
+                Log.e(TAG, "generatedRoute size=" + generatedRoute.size());
 
 
-        return summaryStr.toString();
+
+                // 回喂 JSON（保持你原来的行为）
+                JSONArray routeArr = new JSONArray();
+                if (route != null) {
+                    for (Location L : route) {
+                        JSONObject o = new JSONObject();
+                        o.put("name", L.getName());
+                        o.put("latitude", L.getLatitude());
+                        o.put("longitude", L.getLongitude());
+                        routeArr.put(o);
+                    }
+                }
+                String payloadRoute = "API_Result:{Map_API_Route}\n" + routeArr.toString();
+                java.util.function.Consumer<String> f = feedRef.get();
+                if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
+
+            } catch (Exception e) {
+                requireActivity().runOnUiThread(() ->
+                        addChatMessage("Map_API_Route 调用失败：" + e.getMessage(), false));
+            }
+        }).start();
+    }
+
+    private void handleStepRequest(AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                // 取最近 7 天（含今天），按日期从旧到新拼成 JSON 数组
+                org.json.JSONArray daysArr = new org.json.JSONArray();
+
+                // 使用 java.time（需要已启用 desugaring；一般 Android Gradle Plugin 4+ 项目默认可用）
+                java.time.LocalDate today = java.time.LocalDate.now();
+                java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+                StepDao stepDao = appDatabase.stepDao(); // 你的 DAO
+                for (int i = 6; i >= 0; i--) {
+                    java.time.LocalDate d = today.minusDays(i);
+                    String dateStr = d.format(fmt);
+
+                    Step step = stepDao.getStepByDate(userKey, dateStr); // 可能为 null
+                    int steps = (step == null) ? 0 : step.getStepCount();
+                    double distanceKm;
+
+                    // 如果你的表里已有 distance 字段并且有值，就直接用；否则简易估算：每步 ~0.7m
+                    if (step != null && step.distance > 0f) {
+                        distanceKm = step.distance; // 已存 KM
+                    } else {
+                        distanceKm = steps * 0.0007; // 0.7 m/步 → KM
+                    }
+
+                    org.json.JSONObject one = new org.json.JSONObject();
+                    one.put("date", dateStr);
+                    one.put("steps", steps);
+                    one.put("distance_km", Math.round(distanceKm * 1000d) / 1000d); // 保留 3 位小数
+                    daysArr.put(one);
+                }
+
+                String payloadStep = "API_Result:{StepData_API}\n" + daysArr.toString();
+                java.util.function.Consumer<String> f = feedRef.get();
+                if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadStep));
+
+            } catch (Exception e) {
+                requireActivity().runOnUiThread(() ->
+                        addChatMessage("获取步数失败：" + e.getMessage(), false));
+            }
+        }).start();
     }
 
 
-
-
-    private void checkCameraPermissionAndOpenCamera() {
-        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+    private void handleDrawRequest(String dialogForRoute,
+                                   AtomicReference<List<Location>> lastRouteRef,
+                                   AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        List<Location> r = lastRouteRef.get();
+        if (r == null || r.isEmpty()) {
+            new Thread(() -> {
+                try {
+                    List<Location> route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
+                    lastRouteRef.set(route);
+                    requireActivity().runOnUiThread(() -> {
+                        try { addBotRouteMessage(Collections.singletonList(route)); } catch (Exception e) { throw new RuntimeException(e); }
+                        java.util.function.Consumer<String> f = feedRef.get();
+                        if (f != null) f.accept("API_Done:{Drawing_API}");
+                    });
+                } catch (Exception e) {
+                    requireActivity().runOnUiThread(() ->
+                            addChatMessage("绘制失败（无可用路线）：" + e.getMessage(), false));
+                }
+            }).start();
         } else {
-            dispatchTakePictureIntent();
+            requireActivity().runOnUiThread(() -> {
+                try { addBotRouteMessage(Collections.singletonList(r)); } catch (Exception e) { throw new RuntimeException(e); }
+                java.util.function.Consumer<String> f = feedRef.get();
+                if (f != null) f.accept("API_Done:{Drawing_API}");
+            });
         }
+        return;
     }
+
+    private void handleCertainRequest(String lastUserMsg,
+                                      AtomicReference<org.json.JSONArray> lastCertainListRef,
+                                      AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                org.json.JSONArray poiArray;
+                try {
+                    // ✅ 只用“上一句用户输入”
+                    poiArray = RouteGeneration.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
+                } catch (Exception ex) {
+                    Log.e(TAG, "Map_API_Certain 调用失败：", ex);
+                    poiArray = new org.json.JSONArray();
+                }
+
+                lastCertainListRef.set(poiArray);
+
+                String payloadCertain = "API_Result:{Map_API_Certain}\n" + poiArray.toString();
+                java.util.function.Consumer<String> f = feedRef.get();
+                if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadCertain));
+
+            } catch (Exception e) {
+                requireActivity().runOnUiThread(() ->
+                        addChatMessage("获取 POI 失败：" + e.getMessage(), false));
+            }
+        }).start();
+    }
+
+
+
+
+    private void handleNavigationRequest(List<Location> route) {
+        if(route!=null) Log.e(TAG,"喂给导航的路线点数量："+route.size());
+        else  {Log.e(TAG,"喂给导航的路线点数量:0");}
+        // 1) 切换到导航 UI（你已有的代码）
+        chatModeContainer.setVisibility(View.GONE);
+        navigationModeContainer.setVisibility(View.VISIBLE);
+        rvNav.setAdapter(chatAdapter);
+        rvNav.scrollToPosition(Math.max(0, messageList.size() - 1));
+        activeInput = etNav;
+        activeSend = btnSendNav;
+        bindComposer(activeInput, activeSend);
+
+        // 2) 动态加载 WalkFragment
+        WalkFragment wf = new WalkFragment();
+        Bundle b = new Bundle();
+        b.putString("user_key", userKey);
+        if (route != null && !route.isEmpty()) {
+            b.putSerializable("route_points", new java.util.ArrayList<>(route));
+        }
+
+        wf.setArguments(b);
+
+        // 3) 立即提交，拿到实例
+        getChildFragmentManager()
+                .beginTransaction()
+                .replace(R.id.navigation_container, wf)
+                .commitNow();
+
+
+        WalkFragment current = (WalkFragment) getChildFragmentManager()
+                .findFragmentById(R.id.navigation_container);
+        // ChatbotFragment 切换到导航模式后：
+        View nav = requireView().findViewById(R.id.navigation_container);
+
+        org.json.JSONArray userInputs = buildUserInputs(conversationHistory);
+
+        // 5) 把 userInputs 传给 WalkFragment，WalkFragment 会自己负责定位与 SmartGuide 循环
+        try {
+            current.attachSmartGuide(userInputs);
+        } catch (Exception e) {
+            Log.e("ChatbotFragment", "attachSmartGuide failed", e);
+        }
+
+
+        nav.post(() -> Log.d("ChatbotFragment",
+                "navigation_container size = " + nav.getWidth() + "x" + nav.getHeight()));
+
+
+
+        if (current == null) return;
+
+    }
+
+
+
+
+
+
+
+
+
+
+
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
@@ -882,12 +1021,19 @@ public class ChatbotFragment extends Fragment {
 
 
 
-    /* ---------- 主方法 ---------- */
+    /* ---------- 可视化地图 ---------- */
     @SuppressLint("SetTextI18n")
     private void addBotRouteMessage(List<List<Location>> routes) throws Exception {
+        List<List<Location>> ordered_routes = rank(routes);
 
-        List<List<Location>> ordered_routes=rank(routes);
-
+        // 取排序后第 1 条作为“最优路线”用于上传
+        if (ordered_routes != null && !ordered_routes.isEmpty()) {
+            lastRouteForUpload = new java.util.ArrayList<>(ordered_routes.get(0));
+            lastRouteNameForUpload = buildRouteName(ordered_routes.get(0));
+        } else {
+            lastRouteForUpload = java.util.Collections.emptyList();
+            lastRouteNameForUpload = "";
+        }
 
         View root = LayoutInflater.from(getContext())
                 .inflate(R.layout.bot_route_message, recyclerView, false);
@@ -895,7 +1041,6 @@ public class ChatbotFragment extends Fragment {
         int mapH = (int) (150 * getResources().getDisplayMetrics().density);
 
         for (int i = 0; i < Math.min(ordered_routes.size(), 3); i++) {
-
             List<Location> route = ordered_routes.get(i);
 
             /* ——— Shell ——— */
@@ -909,9 +1054,12 @@ public class ChatbotFragment extends Fragment {
             mapView.setLayoutParams(new RelativeLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, mapH));
             mapView.onCreate();
+            mapView.onResume(); // ✅ 确保地图渲染
 
             List<LatLng> latLngs = new ArrayList<>();
-            for (Location l : route) latLngs.add(new LatLng(l.getLatitude(), l.getLongitude()));
+            for (Location l : route)
+                latLngs.add(new LatLng(l.getLatitude(), l.getLongitude()));
+
             mapView.drawRoute(latLngs, Color.parseColor("#FF4081"));
             card.addView(mapView);
 
@@ -920,68 +1068,21 @@ public class ChatbotFragment extends Fragment {
             chip.setTextSize(12);
             chip.setTextColor(Color.WHITE);
             chip.setPadding(10, 4, 10, 4);
+
             GradientDrawable chipBg = new GradientDrawable();
             chipBg.setColor(Color.parseColor("#66000000"));
             chipBg.setCornerRadius(6 * getResources().getDisplayMetrics().density);
             chip.setBackground(chipBg);
 
             RelativeLayout.LayoutParams chipLp = new RelativeLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
             chipLp.setMargins(12, 12, 0, 0);
             chip.setLayoutParams(chipLp);
             card.addView(chip);
 
             mapdistance(route, userLocation,
                     r -> chip.setText(String.format(Locale.getDefault(), "%.0f m", r.getValue())));
-
-            /* ——— “Navigate” button · smaller ——— */
-            AppCompatButton nav = new AppCompatButton(getContext());
-            nav.setText("Navigate");
-            nav.setTextSize(12);
-            nav.setAllCaps(false);
-            nav.setTextColor(Color.WHITE);
-
-            /* ① 清掉所有系统默认 padding / minSize */
-            nav.setPadding(0, 0, 0, 0);
-            nav.setMinWidth(0);           // remove AppCompat 48dp minWidth / minHeight
-            nav.setMinHeight(0);
-            nav.setMinimumWidth(0);
-            nav.setMinimumHeight(0);
-            nav.setIncludeFontPadding(false);  // remove extra top spacing in font
-
-            /* ② 自定义窄背景（6dp 圆角、深灰填充）——无内部 inset */
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(Color.parseColor("#424242"));         // 深灰
-            bg.setCornerRadius(6 * getResources().getDisplayMetrics().density);
-            nav.setBackground(bg);
-
-            /* ③ 点击水波纹（Android 原生） */
-            TypedValue tv = new TypedValue();
-            getContext().getTheme().resolveAttribute(
-                    android.R.attr.selectableItemBackgroundBorderless, tv, true);
-            nav.setForeground(ContextCompat.getDrawable(getContext(), tv.resourceId));
-
-            /* ④ LayoutParams：紧贴底部、水平居中、无外边距 */
-            RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-            lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
-            lp.bottomMargin = 0;          // 紧贴底
-            nav.setLayoutParams(lp);
-
-            nav.setOnClickListener(v -> {
-                if (isAdded() && getActivity() instanceof MainActivity) {
-                    Bundle b = new Bundle();
-
-                    long routeId=route.get(0).getRoute_id();
-                    b.putLong("route_id", routeId);
-                    WalkFragment wf = new WalkFragment();
-                    wf.setArguments(b);
-                    ((MainActivity) getActivity()).updateNavigationSelection(R.id.nav_walk, wf);
-                }
-            });
-            card.addView(nav);
 
             /* ——— Map ready ——— */
             mapView.postDelayed(() -> {
@@ -990,40 +1091,65 @@ public class ChatbotFragment extends Fragment {
 
                 aMap.showMapText(false);
 
+                // ====== 起点/终点 marker ======
+                if (!route.isEmpty()) {
+                    Location startLoc = route.get(0);
+                    Location endLoc = route.get(route.size() - 1);
+
+                    LatLng startLatLng = new LatLng(startLoc.getLatitude(), startLoc.getLongitude());
+                    LatLng endLatLng = new LatLng(endLoc.getLatitude(), endLoc.getLongitude());
+
+                    // 如果自定义图标不存在，可以先用默认绿色/红色 marker
+                    BitmapDescriptor startIcon;
+                    BitmapDescriptor endIcon;
+                    try {
+                        startIcon = BitmapDescriptorFactory.fromResource(R.drawable.ic_pin_start);
+                    } catch (Exception e) {
+                        startIcon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_GREEN);
+                    }
+                    try {
+                        endIcon = BitmapDescriptorFactory.fromResource(R.drawable.ic_pin_end);
+                    } catch (Exception e) {
+                        endIcon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED);
+                    }
+
+                    MarkerOptions startMarker = new MarkerOptions()
+                            .position(startLatLng)
+                            .title(startLoc.getName() != null ? startLoc.getName() : "Start")
+                            .anchor(0.5f, 1.0f)
+                            .zIndex(1000)
+                            .icon(startIcon);
+
+                    MarkerOptions endMarker = new MarkerOptions()
+                            .position(endLatLng)
+                            .title(endLoc.getName() != null ? endLoc.getName() : "End")
+                            .anchor(0.5f, 1.0f)
+                            .zIndex(1000)
+                            .icon(endIcon);
+
+                    aMap.addMarker(startMarker);
+                    aMap.addMarker(endMarker);
+                }
+                // ====== 起点/终点 marker 结束 ======
+
+                // north/south 标签逻辑
                 Location north = Collections.max(route, Comparator.comparingDouble(Location::getLatitude));
                 Location south = Collections.min(route, Comparator.comparingDouble(Location::getLatitude));
 
                 Log.e("DEBUG", north.getName());
                 Log.e("DEBUG", south.getName()); // 应该能获取 name
 
-                final double LABEL_GAP_M = 50;                       // 阈值：<50 m 认为会重叠
-                double gap = MapTool.distanceBetween(
-                        new LatLng(north.getLatitude(), north.getLongitude()),
-                        new LatLng(south.getLatitude(), south.getLongitude()));
-
-                // ---------- 关键判断 ----------
-                List<Location> picks;
-                if (north.equals(south) || gap < LABEL_GAP_M) {
-                    // 两点重合或太近 → 只留一个
-                    picks = Collections.singletonList(north);        // 也可以改成 south
-                } else {
-                    // 距离足够远 → 两个都显示
-                    picks = Arrays.asList(north, south);
-                }
                 ExecutorService pool = Executors.newSingleThreadExecutor();
                 pool.execute(() -> {
-                    /* north → 往上偏 60px  */
                     drawLabel(aMap, north, -60);
-
-                    /* 如果 north ≠ south，则 south → 往下偏 60px */
                     if (!north.equals(south)) {
                         drawLabel(aMap, south, +60);
                     }
                 });
                 pool.shutdown();
-                LatLng center = MapTool.calculateCenter(latLngs);
-                float zoomLevel = getZoomLevel();
 
+                LatLng center = MapTool.calculateCenter(latLngs);
+                float zoomLevel = getZoomLevel(route);
                 aMap.animateCamera(CameraUpdateFactory.newCameraPosition(
                         new CameraPosition.Builder().target(center).zoom(zoomLevel).tilt(30f).build()));
 
@@ -1034,25 +1160,86 @@ public class ChatbotFragment extends Fragment {
         }
 
         addChatMessage(root, false);
+        uploadUserHistory(
+                lastRouteForUpload,
+                conversationHistory,
+                new RouteSyncManager.OnRouteCreated() {
+                    @Override
+                    public void onSuccess(long routeId) {
+                        Log.i("RouteSync", "✅ 上传成功 routeId=" + routeId);
+                    }
+
+                    @Override
+                    public void onFail(Exception e) {
+                        Log.e("RouteSync", "❌ 上传失败", e);
+                    }
+                }
+        );
     }
 
-    private static float getZoomLevel() {
-        float distanceKm = (float) RouteGeneration.distanceOfRoute; // 单位假设是 km
+
+
+
+
+    private void bindComposer(EditText input, View sendBtn) {
+        // 先清理旧的点击（防止重复 setOnClickListener 时触发多次）
+        sendBtn.setOnClickListener(null);
+
+        sendBtn.setOnClickListener(v -> {
+            String userMessage = input.getText().toString().trim();
+            if (userMessage.isEmpty()) return;
+
+            addChatMessage(userMessage, true);       // 你的已有方法：把用户消息插入列表 & notify
+            input.setText("");
+
+            // —— 你现有的 LLM 发送逻辑（保留），例如：
+            // conversationHistory = ensureSystemPromote(conversationHistory, promote);
+            sendWithPromoteAndTooling(userMessage);
+        });
+    }
+
+
+    /**
+     * 根据路线中最远两点的直线距离来决定地图缩放级别
+     * @param route 一条路线（点的列表）
+     * @return 建议的缩放等级
+     */
+    private static float getZoomLevel(List<Location> route) {
+        if (route == null || route.size() < 2) {
+            return 16f; // 默认近距离
+        }
+
+        double maxDistanceMeters = 0;
+
+        // 枚举两两点对，找出最大直线距离
+        for (int i = 0; i < route.size(); i++) {
+            for (int j = i + 1; j < route.size(); j++) {
+                double d = MapTool.distanceBetween(
+                        new LatLng(route.get(i).getLatitude(), route.get(i).getLongitude()),
+                        new LatLng(route.get(j).getLatitude(), route.get(j).getLongitude())
+                );
+                if (d > maxDistanceMeters) {
+                    maxDistanceMeters = d;
+                }
+            }
+        }
+
+        float distanceKm = (float) (maxDistanceMeters / 1000.0); // 转换成 km
         float zoomLevel;
 
         if (distanceKm <= 1.0f) {
-            zoomLevel = 15f;
-        } else if (distanceKm <= 3.0f) {
             zoomLevel = 14f;
-        } else if (distanceKm <= 5.0f) {
+        } else if (distanceKm <= 3.0f) {
             zoomLevel = 13.5f;
-        } else if (distanceKm <= 8.0f) {
+        } else if (distanceKm <= 5.0f) {
             zoomLevel = 13f;
-        } else if (distanceKm <= 12.0f) {
+        } else if (distanceKm <= 8.0f) {
             zoomLevel = 12.5f;
         } else {
-            zoomLevel = 12f; // 更远的距离，缩小视角
+            zoomLevel = 12f;
         }
+
+        Log.e(TAG,zoomLevel+"");
         return zoomLevel;
     }
 
@@ -1126,6 +1313,15 @@ public class ChatbotFragment extends Fragment {
     }
 
 
+    private String buildRouteName(List<Location> r) {
+        String ts = new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(new java.util.Date());
+        if (r == null || r.isEmpty()) return "Route " + ts;
+        String s = trimLocationName(r.get(0).getName());
+        String e = trimLocationName(r.get(r.size() - 1).getName());
+        if (android.text.TextUtils.isEmpty(s) || android.text.TextUtils.isEmpty(e)) return "Route " + ts;
+        return s + " → " + e + " · " + ts;
+    }
 
 
 
@@ -1267,6 +1463,133 @@ public class ChatbotFragment extends Fragment {
         chatAdapter.notifyDataSetChanged();
     }
 
+    // === 放在 RouteSyncManager 类内（与其它 static 方法同级）===
+
+    /**
+     * 一次性上传：Route（含对话历史） + 路线点位。
+     * 会自动初始化（若尚未 init）。
+     */
+    public static void uploadUserHistory(
+            @NonNull List<Location> routePoints,
+            @NonNull org.json.JSONArray conversationHistory,
+            @NonNull RouteSyncManager.OnRouteCreated cb
+    ) {
+        ensureInitialized();
+
+        if (routePoints.isEmpty()) {
+            cb.onFail(new IllegalArgumentException("routePoints empty"));
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        // 1) 构造 Route
+        Route route = new Route();
+
+        if (userKey == null || userKey.isEmpty()) {
+            cb.onFail(new IllegalStateException("not login"));
+            return;
+        }
+        route.setUserKey(userKey);
+        route.setName(defaultRouteName(routePoints));
+        route.setCreatedAt(now);
+        route.setDescription(buildDescriptionJson(routePoints, conversationHistory, now));
+
+        setPendingRouteDescription(route.getDescription());
+
+        // 2) 云端创建路线（createRoute 内部会同步写本地 Route）
+        createRoute(route, new RouteSyncManager.OnRouteCreated() {
+            @Override public void onSuccess(long routeId) {
+                // 3) 云端 + 本地 点位
+                List<LocationDTO> dtoList = new ArrayList<>(routePoints.size());
+
+                for (int i = 0; i < routePoints.size(); i++) {
+                    Location loc = routePoints.get(i);
+
+
+
+                    // DTO 给云端
+                    // 云端 DTO 直接用本地的 id 和 routeId
+                    dtoList.add(new LocationDTO(
+                            loc.getId(),          // 用本地生成的随机 long
+                            i,                    // indexNum
+                            route.getId(),        // 用本地生成的 routeId
+                            loc.getName(),
+                            loc.getLatitude(),
+                            loc.getLongitude()
+                    ));
+
+
+                    // 本地点位落库：回写 routeId
+                    loc.setRouteId(routeId);
+                    loc.setIndexNum(i);
+                    try {
+                        appDatabase.locationDao().insert(loc);
+                    } catch (Exception e) {
+                        Log.e("RouteSyncManager", "Local insert Location failed", e);
+                    }
+                }
+
+                // 云端批量上传
+                uploadLocations(dtoList);
+
+                cb.onSuccess(routeId);
+            }
+
+            @Override public void onFail(Exception e) {
+                cb.onFail(e);
+            }
+        });
+    }
+
+    private static String buildDescriptionJson(List<Location> pts,
+                                               org.json.JSONArray history,
+                                               long now) {
+        try {
+            org.json.JSONObject root = new org.json.JSONObject();
+            root.put("createdAt", now);
+            root.put("pointCount", pts.size());
+            if (history != null) root.put("conversationHistory", history);
+
+            org.json.JSONObject start = new org.json.JSONObject()
+                    .put("lat", pts.get(0).getLatitude())
+                    .put("lng", pts.get(0).getLongitude());
+            org.json.JSONObject end = new org.json.JSONObject()
+                    .put("lat", pts.get(pts.size() - 1).getLatitude())
+                    .put("lng", pts.get(pts.size() - 1).getLongitude());
+            root.put("start", start);
+            root.put("end", end);
+
+            return root.toString();
+        } catch (Exception e) {
+            return "route&conversation captured at " + now;
+        }
+    }
+
+    private static String defaultRouteName(List<Location> r) {
+        String ts = new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(new java.util.Date());
+        return "Route · " + ts;
+    }
+
+
+
+
+    // === 生成 description：把“对话历史 + 路线概要”打包成字符串（落到 Route.description） ===
+
+
+
+
+
+    // —— 辅助：服务器地址（支持从偏好读取），默认 10.0.2.2:8080 便于本机调试 ——
+
+
+
+
+    @Override public void onResume() { super.onResume(); RouteGeneration.setTranscriptProvider(() -> buildFullTranscript(null)); }
+    @Override public void onPause()  { super.onPause();  RouteGeneration.setTranscriptProvider(null); }
+
+
 
     @Override
     public void onDestroyView() {
@@ -1281,6 +1604,32 @@ public class ChatbotFragment extends Fragment {
             }
             routeContainer.removeAllViews();
         }
+    }
+
+    // ChatbotFragment.java（类内新增）
+    private @NonNull String buildFullTranscript(@Nullable String appendUserMessage) {
+        StringBuilder sb = new StringBuilder(8 * 1024);
+        try {
+            if (conversationHistory != null) {
+                for (int i = 0; i < conversationHistory.length(); i++) {
+                    org.json.JSONObject it = conversationHistory.optJSONObject(i);
+                    if (it == null) continue;
+                    String role = it.optString("role", "");
+                    String content = it.optString("content", "");
+                    if (content == null) content = "";
+                    if (!role.isEmpty()) {
+                        sb.append(role.toUpperCase(java.util.Locale.ROOT))
+                                .append(": ").append(content).append('\n');
+                    } else {
+                        sb.append(content).append('\n');
+                    }
+                }
+            }
+        } catch (Exception ignore) {}
+        if (appendUserMessage != null && !appendUserMessage.isEmpty()) {
+            sb.append("USER: ").append(appendUserMessage).append('\n');
+        }
+        return sb.toString();
     }
 
 

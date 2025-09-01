@@ -2,30 +2,39 @@ package com.example.walkpromote22.data.dto;
 
 public class LocationDTO {
     private long id;
-    private int index_num;
-    private long route_id;    // 服务器返回的真 routeId
+    private int indexNum;
+    private long routeId;    // 服务器返回的真 routeId
     private String name;
     private double latitude;
     private double longitude;
     private int features;
     public LocationDTO(){};
-    public LocationDTO(long id, int index_num, long route_id, String name, double latitude, double longitude, int features){
+    public LocationDTO(long id, int indexNum, long routeId, String name, double latitude, double longitude, int features){
         this.id=id;
-        this.index_num = index_num;
+        this.indexNum = indexNum;
         this.features=features;
         this.name=name;
         this.latitude=latitude;
-        this.route_id = route_id;
+        this.routeId = routeId;
         this.longitude=longitude;
 
     }
 
-    public void setIndex_num(int index_num) {
-        this.index_num = index_num;
+    public LocationDTO(long id, int i, long routeId, String name, double latitude, double longitude) {
+        this.id=id;
+        this.indexNum=i;
+        this.routeId=routeId;
+        this.name=name;
+        this.latitude=latitude;
+        this.longitude=longitude;
     }
 
-    public int getIndex_num() {
-        return index_num;
+    public void setIndexNum(int indexNum) {
+        this.indexNum = indexNum;
+    }
+
+    public int getIndexNum() {
+        return indexNum;
     }
 
     public void setId(long id) {
@@ -64,12 +73,12 @@ public class LocationDTO {
         this.name = name;
     }
 
-    public long getRoute_id() {
-        return route_id;
+    public long getRouteId() {
+        return routeId;
     }
 
-    public void setRoute_id(long route_id) {
-        this.route_id = route_id;
+    public void setRouteId(long routeId) {
+        this.routeId = routeId;
     }
 
     public String getName() {

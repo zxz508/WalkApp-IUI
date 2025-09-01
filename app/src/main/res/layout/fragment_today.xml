@@ -5,8 +5,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true"
-    tools:context=".HomeFragments.HomeFragment">
+    android:fillViewport="true">
 
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -46,73 +45,101 @@
                 android:padding="24dp">
 
                 <!-- 横向可滑动的自定义进度条 -->
+                <!-- 横向可滑动的自定义进度条 -->
                 <HorizontalScrollView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:scrollbars="none">
+                    android:scrollbars="none"
+                    android:clipToPadding="false"
+                    android:clipChildren="false"
+                    android:fillViewport="true"
+                    >
 
-                    <FrameLayout
-                        android:id="@+id/progress_container"
-                        android:layout_width="match_parent"
-                        android:layout_height="60dp">
+        <!-- ✅ 唯一的直接子 View：作为容器 -->
+                    <LinearLayout
+                        android:id="@+id/hs_content"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
 
+                        <androidx.constraintlayout.widget.ConstraintLayout
+                            android:id="@+id/progress_container"
+                            android:layout_width="600dp"
+                            android:layout_height="12dp">
 
-                        <!-- Marker 10000步：红色标识 -->
-
-                        <FrameLayout
-                            android:id="@+id/progress_wrapper"
-                            android:layout_width="400dp"
-                            android:layout_height="16dp"
-                            android:background="@drawable/bg_progress_border">
-
-                            <ProgressBar
-                                android:id="@+id/progressBar"
-                                style="?android:attr/progressBarStyleHorizontal"
-                                android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:max="100"
-                                android:progress="0"
-                                android:progressDrawable="@drawable/progress_fill_only"
-                                android:background="@android:color/transparent"/>
-                        </FrameLayout>
-
-                        <View
-                            android:id="@+id/marker_10000"
-                            android:layout_width="8dp"
-                            android:layout_height="16dp"
-                            android:layout_marginStart="100dp"
-                            android:layout_gravity="top"
-                            android:background="@drawable/circle_marker" />
-
-                        <!-- Marker 25000步：红色标识 -->
-
-                        <View
-                            android:id="@+id/marker_25000"
-                            android:layout_width="8dp"
-                            android:layout_height="16dp"
-                            android:layout_marginStart="200dp"
-                            android:layout_gravity="top"
-                            android:background="@drawable/circle_marker" />
+            <ProgressBar
+                android:id="@+id/progressBar"
+                style="@android:style/Widget.ProgressBar.Horizontal"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:max="100"
+                android:progress="0"
+                android:indeterminate="false"
+                android:progressDrawable="@drawable/progress_orange"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintTop_toTopOf="parent"
+                app:layout_constraintBottom_toBottomOf="parent" />
 
 
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/g25"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.25" />
 
-                        <View
-                            android:id="@+id/marker_60000"
-                            android:layout_width="8dp"
-                            android:layout_height="16dp"
-                            android:layout_marginStart="300dp"
-                            android:layout_gravity="top"
-                            android:background="@drawable/circle_marker" />
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/g50"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.5" />
+
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/g75"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.75" />
 
 
+            <View
+                android:layout_width="2dp"
+                android:layout_height="0dp"
+                android:background="#FFD700"
+                app:layout_constraintStart_toStartOf="@id/g25"
+                app:layout_constraintTop_toTopOf="@id/progressBar"
+                app:layout_constraintBottom_toBottomOf="@id/progressBar" />
+
+            <View
+                android:layout_width="2dp"
+                android:layout_height="0dp"
+
+                android:background="#FFD700"
+                app:layout_constraintStart_toStartOf="@id/g50"
+                app:layout_constraintTop_toTopOf="@id/progressBar"
+                app:layout_constraintBottom_toBottomOf="@id/progressBar" />
+            <View
+                android:layout_width="2dp"
+                android:layout_height="0dp"
+                android:background="#FFD700"
+                app:layout_constraintStart_toStartOf="@id/g75"
+                app:layout_constraintTop_toTopOf="@id/progressBar"
+                app:layout_constraintBottom_toBottomOf="@id/progressBar" />
+                        </androidx.constraintlayout.widget.ConstraintLayout>
 
 
-                    </FrameLayout>
+                    </LinearLayout>
+
+
                 </HorizontalScrollView>
+
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="15dp"
                     android:text="Walking distance today"
                     android:textSize="18sp"
                     android:textColor="@color/colorPrimaryDark"

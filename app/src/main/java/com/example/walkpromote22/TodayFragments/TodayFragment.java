@@ -10,6 +10,10 @@ import static android.content.Context.MODE_PRIVATE;
 
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 
+import android.animation.ObjectAnimator;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -22,6 +26,7 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.CalendarView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -65,12 +70,12 @@ public class TodayFragment extends Fragment {
 
     private static final int RC_SIGN_IN = 1001;
     private static final int RC_FIT_PERM = 1002;
-    private final int maxDistance = 3000;
+    private final float maxDistance = 3.0f;
 
     private SharedPreferences sharedPreferences;
-    private View progressContainer;
+    //private View progressContainer;
 
-    private ProgressBar progressBar;
+    //private ProgressBar progressBar;
 
 
 
@@ -87,6 +92,7 @@ public class TodayFragment extends Fragment {
 
     private enum ProviderType { GOOGLE, SAMSUNG, HUAWEI, LOCAL, UNKNOWN }
     private ProviderType currentProvider = ProviderType.UNKNOWN;
+    private ProgressBar progressBar;
 
 
     private static Activity mActivity = null;
@@ -134,11 +140,23 @@ public class TodayFragment extends Fragment {
 
         View rootView = inflater.inflate(R.layout.fragment_today, container, false);
 
-        progressContainer = rootView.findViewById(R.id.progress_container);
-        progressBar = rootView.findViewById(R.id.progressBar);
+
         distanceTextView = rootView.findViewById(R.id.distance_count_text);
         caloriesBurnedTextView = rootView.findViewById(R.id.calories_burned_text);
         stepTextView = rootView.findViewById(R.id.distance_text);
+// 让 wrapper 和 bar 处于最上层，避免被 marker 覆盖
+
+        progressBar = rootView.findViewById(R.id.progressBar); // ID 来自你嵌入到 fragment_today 的布局
+        if (progressBar != null) {
+            progressBar.setMax(100);
+
+            // 让 wrapper 和 bar 处于最上层，避免被 marker 覆盖（如果你外层有 wrapper，也可以一起 bringToFront）
+            View wrapper = rootView.findViewById(R.id.progress_container); // 若无该 ID，可忽略此行
+            if (wrapper != null) wrapper.bringToFront();
+            progressBar.bringToFront();
+        }
+
+
 
 
         appDatabase = AppDatabase.getDatabase(getContext());
@@ -197,7 +215,7 @@ public class TodayFragment extends Fragment {
 
         // false表面调用固定测试地址（西交利物浦大学）
         try {
-            getCurrentLocation(false,requireContext(), new ChatbotFragment.LocationCallback() {
+            getCurrentLocation(true,requireContext(), new ChatbotFragment.LocationCallback() {
                 @Override
                 public void onLocationReceived(LatLng location) {
                     SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
@@ -257,15 +275,18 @@ public class TodayFragment extends Fragment {
 
 
 
+
+
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
 
-
-
-
+        // 其余业务逻辑（例如 loadTodayData() 等）可继续保持你原来的调用
     }
+
+
+
 
     @SuppressLint("SimpleDateFormat")
     private void loadTodayData() {
@@ -274,7 +295,7 @@ public class TodayFragment extends Fragment {
         String todayStr = new SimpleDateFormat("yyyy-MM-dd")
                 .format(new Date());
 
-        progressBar.setVisibility(View.VISIBLE);
+
 
         /* —— 2. 后台线程读取数据库 —— */
         executorService.execute(() -> {
@@ -294,17 +315,17 @@ public class TodayFragment extends Fragment {
                 distanceTextView.setText(
                         String.format(Locale.getDefault(), "%.2f km", distanceKm));
 
-                /* 进度条 (目标 3 km，可改 maxDistance) */
-                float ratio = distanceKm / maxDistance;   // maxDistance = 3.0 km
-                int progress = Math.min(100, (int) (ratio * 100));
-                progressBar.setProgress(progress);
+
+
+                setProgressFromDistanceAndSteps(distanceKm, steps);
+
 
                 /* 卡路里估算（示例公式） */
                 double calories = steps * 0.04 * (userWeight / 70f);
                 caloriesBurnedTextView.setText(
                         String.format(Locale.getDefault(), "%.2f calories", calories));
 
-                progressBar.setVisibility(View.GONE);
+
             });
         });
     }
@@ -314,7 +335,7 @@ public class TodayFragment extends Fragment {
     /** 读取日历选中的某一天数据（线程安全处理） */
     private void loadDataForDate(final String ymd) {
 
-        progressBar.setVisibility(View.VISIBLE);
+
 
         /* —— 1. 后台线程读取数据库 —— */
         executorService.execute(() -> {
@@ -339,7 +360,7 @@ public class TodayFragment extends Fragment {
             /* —— 4. 回到主线程刷新 UI —— */
             requireActivity().runOnUiThread(() -> {
                 updateUIWithStepsAndDistance(steps, distanceKm, ymd);
-                progressBar.setVisibility(View.GONE);
+
             });
         });
     }
@@ -385,13 +406,67 @@ public class TodayFragment extends Fragment {
 
 
 
+    private void setProgressFromDistanceAndSteps(float distanceKm, int steps) {
+        Log.e("PB-APPLY", "steps=" + steps + ", distKm=" + distanceKm);
+
+        float dm = distanceKm;
+        if (dm <= 0f && steps > 0) {
+            SharedPreferences sp = requireContext().getSharedPreferences("user_prefs", MODE_PRIVATE);
+            float strideM = sp.getFloat("strideMeters", 0.70f);
+            dm = steps * strideM / 1000f; // km
+        }
+
+        float safeMax = (maxDistance > 0f) ? maxDistance : 3.0f;
+        float ratio = dm / safeMax;
+        if (Float.isNaN(ratio) || Float.isInfinite(ratio)) ratio = 0f;
+
+        int percent = Math.max(0, Math.min(100, Math.round(ratio * 100f)));
+
+        // 只有“有意义的数据”才更新进度；若两者都 0，就保持当前进度（不清零）
+        if (dm > 0f || steps > 0) {
+            setProgressSafely(percent);
+        }
+    }
+
+    private void animateProgressTo(int targetPercent) {
+        if (progressBar == null) return;
+
+        int current = progressBar.getProgress();
+        targetPercent = Math.max(0, Math.min(100, targetPercent));
+
+        ObjectAnimator anim = ObjectAnimator.ofInt(progressBar, "progress", current, targetPercent);
+        anim.setDuration(600); // 动画时长，可调整
+        anim.setInterpolator(new DecelerateInterpolator());
+        anim.start();
+    }
+    private void setProgressSafely(int percent) {
+        if (progressBar == null || !isAdded()) return;
+        final int p = Math.max(0, Math.min(100, percent));
+
+        // 切到 UI 线程更新，避免后台线程调用无效
+        progressBar.post(() -> {
+            try {
+                // API 24+ 原生带动画；低版本走自定义属性动画
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    progressBar.setIndeterminate(false);
+                    progressBar.setVisibility(View.VISIBLE);
+                    progressBar.setProgress(p, true);
+                } else {
+                    animateProgressTo(p); // 你已有的动画方法
+                }
+            } catch (Exception e) {
+                // 兜底：直接设置
+                progressBar.setIndeterminate(false);
+                progressBar.setVisibility(View.VISIBLE);
+                progressBar.setProgress(p);
+            }
+        });
+    }
 
 
 
 
-
-
-     // 更新 UI 并将数据存入数据库，注意此处使用传入的 date 参数，确保日期一致
+    // 更新 UI 并将数据存入数据库，注意此处使用传入的 date 参数，确保日期一致
 
 
 
@@ -413,10 +488,8 @@ public class TodayFragment extends Fragment {
                 distanceTextView.setText(String.format(Locale.getDefault(),
                         "%.2f km", distanceKm));
 
-                // 进度条：目标 3 km，可按需调整
-                float ratio = distanceKm / maxDistance;      // maxDistance = 3 (km)
-                int progressPercent = Math.min(100, (int) (ratio * 100));
-                progressBar.setProgress(progressPercent);
+
+                setProgressFromDistanceAndSteps(distanceKm, steps);
 
                 // 卡路里（示例算法）
                 double calories = steps * 0.04 * (userWeight / 70f);
@@ -439,6 +512,7 @@ public class TodayFragment extends Fragment {
             }
         });
     }
+
 
 
 

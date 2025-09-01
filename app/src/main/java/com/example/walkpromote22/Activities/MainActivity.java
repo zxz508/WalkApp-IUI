@@ -104,8 +104,9 @@ public class MainActivity extends AppCompatActivity {
         UserDao userDao = db.userDao();
 
 
-        RouteSyncManager routeSyncManager = new RouteSyncManager(this);
-        routeSyncManager.syncFromCloudToLocal();
+        RouteSyncManager.init(getApplicationContext());
+
+        RouteSyncManager.syncFromCloudToLocal(userKey);
 
 
         ExecutorService executor = Executors.newSingleThreadExecutor();

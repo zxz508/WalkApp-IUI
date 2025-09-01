@@ -32,7 +32,7 @@ public interface LocationDao {
     @Query("SELECT * FROM locations WHERE id = :id LIMIT 1")
     Location getLocationById(long id); // 根据 id 查询地图记录
 
-    @Query("SELECT * FROM locations WHERE route_id = :routeId ORDER BY id ASC")
+    @Query("SELECT * FROM locations WHERE routeId = :routeId ORDER BY id ASC")
     List<Location> getLocationsByRouteId(long routeId);
 
     @Query("SELECT * FROM locations")

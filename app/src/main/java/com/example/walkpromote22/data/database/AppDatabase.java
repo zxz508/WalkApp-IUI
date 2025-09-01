@@ -32,7 +32,7 @@ import android.database.Cursor;
         PathPoint.class,
         Location.class,
         Route.class
-}, version = 18, exportSchema = false)
+}, version = 23, exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 
     public abstract UserDao userDao();

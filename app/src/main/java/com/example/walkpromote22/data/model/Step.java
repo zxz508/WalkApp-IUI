@@ -22,6 +22,7 @@ public class Step {
     private String userKey; // 外键，关联用户
 
     private String date;    // 格式：YYYY-MM-DD
+    @androidx.annotation.IntRange(from = 0)
     private int stepCount;
 
 
@@ -60,15 +61,30 @@ public class Step {
     }
 
     public int getStepCount() {
+        if(stepCount<0){
+            setStepCount(0);
+            return 0;
+        }
         return stepCount;
     }
 
-    public float getDistance(){return distance;}
+    public float getDistance(){
+
+        if (distance<0){
+            setDistance(0);
+            return 0;
+        }
+        return distance;
+    }
 
     public void setDistance(float distance){ this.distance=distance;}
 
     public void setStepCount(int stepCount) {
-        this.stepCount = stepCount;
+        if (stepCount < 0) {
+            this.stepCount = 0; // 或者抛异常
+        } else {
+            this.stepCount = stepCount;
+        }
     }
 }
 

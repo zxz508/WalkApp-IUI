@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 背景 + 橙黄色边框 -->
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="9dp" />
+            <stroke android:width="2dp" android:color="#FFA500"/> <!-- 橙黄色边框 -->
+            <solid android:color="#10FFFFFF" /> <!-- 半透明填充，可按需调 -->
+        </shape>
+    </item>
+
+    <!-- 进度条（随进度裁剪） -->
+    <item android:id="@android:id/progress">
+        <clip android:clipOrientation="horizontal" android:gravity="left">
+            <shape android:shape="rectangle">
+                <corners android:radius="9dp" />
+                <solid android:color="#FF7F50"/> <!-- 进度颜色（珊瑚橙，可自行换色） -->
+            </shape>
+        </clip>
+    </item>
+</layer-list>

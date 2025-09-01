@@ -10,31 +10,36 @@ import androidx.annotation.NonNull;
 
 import com.amap.api.maps.model.LatLng;
 import com.example.walkpromote22.data.model.Location;
+import com.example.walkpromote22.tool.MapTool;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.UnsupportedEncodingException;
+import java.io.InterruptedIOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
-
+import java.util.function.BiFunction;
+import java.util.zip.GZIPInputStream;
 
 
 /**
@@ -52,6 +57,43 @@ public class RouteGeneration {
 
     /** OpenAI Key（上线前移出源码） */
     private static final String OPENAI_KEY = "sk-O62I7CQRETZ1dSFevmJWqdsJtsfWmg91sbBdWY8tJDRbgYTm";
+
+
+
+    // === 统一对话历史 Transcript 注入（新增） ===
+    public interface TranscriptProvider {
+        /** 返回需要附带给 GPT 的完整对话历史（包含 user/assistant/API_Result 等文本） */
+        String getTranscript();
+    }
+
+    private static volatile TranscriptProvider transcriptProvider;
+
+    /** 上层（如 ChatbotFragment）在 onResume 时调用注册，onPause/onDestroyView 注销 */
+    public static void setTranscriptProvider(TranscriptProvider provider) {
+        transcriptProvider = provider;
+    }
+
+    /** 安全拿 transcript（provider 可能为 null 或抛异常） */
+    private static String safeGetTranscript() {
+        try {
+            if (transcriptProvider == null) return "";
+            String t = transcriptProvider.getTranscript();
+            return (t == null) ? "" : t;
+        } catch (Throwable ignore) {
+            return "";
+        }
+    }
+
+    /** 把 transcript 作为一条 system 消息插到历史最前面 */
+    private static JSONArray prependTranscript(JSONArray hist, String transcript) throws JSONException {
+        if (transcript == null || transcript.trim().isEmpty()) return hist;
+        JSONArray merged = new JSONArray();
+        merged.put(new JSONObject().put("role", "system")
+                .put("content",  "/"+transcript+"/"));
+        for (int i = 0; i < hist.length(); i++) merged.put(hist.get(i));
+        return merged;
+    }
+
 
     /* =========================================================
      *  工具：去掉 GPT ```json``` 代码块
@@ -80,10 +122,12 @@ public class RouteGeneration {
      *  2. 获取缓存定位
      * ========================================================= */
     private static LatLng getUserLocation(Context ctx) {
+
         SharedPreferences sp = ctx.getSharedPreferences("AppData", Context.MODE_PRIVATE);
         String lat = sp.getString("location_lat", null);
         String lon = sp.getString("location_long", null);
 
+        Log.e(TAG,"存储的经纬度是："+lat+","+lon);
         if (lat == null || lon == null) return null;
         try {
             location= new LatLng(Double.parseDouble(lat), Double.parseDouble(lon));
@@ -145,57 +189,49 @@ public class RouteGeneration {
 
         Log.e(TAG, "3");
         LatLng center = location;
-        int halfSideMeters = 3000, tileSizeMeters =(int) Math.floor(halfSideMeters / Math.sqrt(7)); ;
+        int halfSideMeters = 3000, tileSizeMeters = (int) Math.floor(halfSideMeters / Math.sqrt(7));
         int perTileMax = 200, globalMax = 1200;
-        boolean dedupById = true;
 
-       // List<Location> coreLocations=getCoreLocationsFromRequirement(userUtter);
-       // if (coreLocations.isEmpty()) {
-            JSONArray nearby = fetchPOIs(center, halfSideMeters, tileSizeMeters,
-                    perTileMax, globalMax, dedupById);
 
-            Log.e("POI_DEBUG", "一共获取到的POI数量 nearby size = " + (nearby != null ? nearby.length() : "null"));
+        // 取周边 POI（你原有逻辑）
+        JSONArray nearby = fetchPOIs(center, halfSideMeters, tileSizeMeters, perTileMax, globalMax);
+        Log.e("POI_DEBUG", "一共获取到的POI数量 nearby size = " + (nearby != null ? nearby.length() : "null"));
 
-            // 直接用 GPT 选点
-            SelectedRoute sel = chooseWaypointsWithGPT(userUtter, nearby);
-            if (sel == null || sel.waypoints == null || sel.waypoints.isEmpty())
-                throw new IllegalStateException("GPT 未能选出 waypoints");
+        // 直接用 GPT 选点 —— chooseWaypointsWithGPT 内部会自动注入 Transcript
+        SelectedRoute sel = chooseWaypointsWithGPT(userUtter, nearby);
+        if (sel == null || sel.waypoints == null || sel.waypoints.isEmpty())
+            throw new IllegalStateException("GPT 未能选出 waypoints");
 
-            // 直接把 waypoints 转成 List<Location>
-            List<Location> result = new ArrayList<>();
-            int idx = 0;
-            for (int i = 0; i < sel.waypoints.size(); i++) {
-                LatLng wp = sel.waypoints.get(i);
-                Location loc = new Location();
-                loc.setLatitude(wp.latitude);
-                loc.setLongitude(wp.longitude);
-                loc.setIndex_num(idx++);
+        // 直接把 waypoints 转成 List<Location>
+        List<Location> result = new ArrayList<>();
+        int idx = 0;
+        for (int i = 0; i < sel.waypoints.size(); i++) {
+            LatLng wp = sel.waypoints.get(i);
+            Location loc = new Location();
+            loc.setLatitude(wp.latitude);
+            loc.setLongitude(wp.longitude);
+            loc.setIndexNum(idx++);
 
-                // 从 waypointNames 取对应名字（防止越界）
-                if (sel.waypointNames != null && i < sel.waypointNames.size()) {
-                    loc.setName(sel.waypointNames.get(i));
-                } else {
-                    loc.setName(""); // 或者给个默认值
-                }
-
-                result.add(loc);
+            // 从 waypointNames 取对应名字（防止越界）
+            if (sel.waypointNames != null && i < sel.waypointNames.size()) {
+                loc.setName(sel.waypointNames.get(i));
+            } else {
+                loc.setName("");
             }
+            result.add(loc);
+        }
 
+        // 计算总距离（直线方式）
+        distanceOfRoute = computeAccurateDistance(sel.waypoints);
+        Log.d("Route", "Total distance (waypoints only): " + distanceOfRoute + " meters");
 
-            // 计算总距离（直线方式）
-            distanceOfRoute = computeAccurateDistance(sel.waypoints);
-            Log.d("Route", "Total distance (waypoints only): " + distanceOfRoute + " meters");
-
-            return result;
-       // }
-       // else {
-         //   Log.e("POI_DEBUG", "一共获取到的POI数量core POI size = " + (coreLocations.size()));
-
-      //  }
+        return result;
     }
 
-    public static JSONArray getCoreLocationsFromRequirement(String requirment) throws JSONException {
-        // 1) system 规则：仅返回 {A1,A2,...} 或 {0}
+
+    public static JSONArray getCoreLocationsFromRequirement(@NonNull Context ctx,String requirment) throws JSONException {
+        getUserLocation(ctx);
+        // 1) system 规则
         String sysPrompt =
                 "分析下面用户的语句中是否有提到要去到或者从其中出发的地名或者店名（只要是能在地图上查询到的都包括在内），" +
                         "如果有请返回{A1,A2,B1,B2,...}的格式，其中A1中文名、A2英文名（若无可留空），多个POI依次列出；" +
@@ -212,7 +248,7 @@ public class RouteGeneration {
         String fsUser4 = "I wanna go to KFC";
         String fsAsst4 = "{肯德基, KFC}";
 
-        // 3) 组装对话历史
+        // 3) 对话历史
         ChatbotHelper helper = new ChatbotHelper(OPENAI_KEY);
         JSONArray hist = new JSONArray()
                 .put(new JSONObject().put("role", "system").put("content", sysPrompt))
@@ -224,24 +260,24 @@ public class RouteGeneration {
                 .put(new JSONObject().put("role", "assistant").put("content", fsAsst3))
                 .put(new JSONObject().put("role", "user").put("content", fsUser4))
                 .put(new JSONObject().put("role", "assistant").put("content", fsAsst4));
+        hist = prependTranscript(hist, safeGetTranscript());
 
-        // 4) 发送 requirment，等待回复
+        // 4) 请求 GPT
         final String[] reply = new String[1];
-        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        CountDownLatch latch = new CountDownLatch(1);
         helper.sendMessage(requirment == null ? "" : requirment, hist, new ChatbotResponseListener() {
             @Override public void onResponse(String r) { reply[0] = r; latch.countDown(); }
             @Override public void onFailure(String e)   { reply[0] = null; latch.countDown(); }
         });
-
         try {
-            if (!latch.await(25, java.util.concurrent.TimeUnit.SECONDS)) throw new JSONException("TIMEOUT_WAITING_GPT");
+            if (!latch.await(25, TimeUnit.SECONDS)) throw new JSONException("TIMEOUT_WAITING_GPT");
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             throw new JSONException("INTERRUPTED_WAITING_GPT");
         }
         if (reply[0] == null) throw new JSONException("GPT_RESPONSE_NULL");
 
-        // 5) 解析 {A,B,...} —— 兼容全角｛｝
+        // 5) 解析 {A,B,...}
         String raw = reply[0].trim();
         raw = raw.replaceAll("^```(?:json)?\\s*", "").replaceAll("\\s*```$", "").trim();
         raw = raw.replace('｛','{').replace('｝','}');
@@ -251,7 +287,7 @@ public class RouteGeneration {
         if (inner.isEmpty() || "0".equals(inner)) return new JSONArray();
 
         String[] toks = inner.split("[,，、;；\\s]+");
-        java.util.LinkedHashSet<String> nameSet = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> nameSet = new LinkedHashSet<>();
         for (String t : toks) {
             if (t == null) continue;
             String name = t.trim();
@@ -260,14 +296,14 @@ public class RouteGeneration {
                     (name.startsWith("'") && name.endsWith("'"))) {
                 name = name.substring(1, name.length()-1).trim();
             }
-            name = name.replaceAll("\\s*[\\(（【][^\\)）】]*[\\)）】]\\s*", " ").trim().replaceAll("\\s{2,}"," ");
-            if (name.isEmpty()) continue;
-            nameSet.add(name);
+            name = name.replaceAll("\\s*[\\(（【][^\\)）】]*[\\)）】]\\s*", " ")
+                    .trim().replaceAll("\\s{2,}"," ");
+            if (!name.isEmpty()) nameSet.add(name);
         }
         if (nameSet.isEmpty()) return new JSONArray();
 
         // 6) 同义词扩展
-        java.util.Map<String,String[]> synonyms = new java.util.HashMap<>();
+        Map<String,String[]> synonyms = new HashMap<>();
         synonyms.put("KFC", new String[]{"肯德基","KFC"});
         synonyms.put("肯德基", new String[]{"肯德基","KFC"});
         synonyms.put("McDonald's", new String[]{"麦当劳","McDonald's","Mcdonalds"});
@@ -279,10 +315,10 @@ public class RouteGeneration {
         synonyms.put("Burger King", new String[]{"汉堡王","Burger King"});
         synonyms.put("汉堡王", new String[]{"汉堡王","Burger King"});
 
-        java.util.LinkedHashSet<String> expanded = new java.util.LinkedHashSet<>(nameSet);
+        LinkedHashSet<String> expanded = new LinkedHashSet<>(nameSet);
         for (String k : nameSet) {
             if (synonyms.containsKey(k)) {
-                for (String alt : synonyms.get(k)) expanded.add(alt);
+                expanded.addAll(Arrays.asList(synonyms.get(k)));
             } else if (k.matches("(?i)[a-z0-9\\-'. ]+")) {
                 expanded.add(k.toUpperCase());
                 expanded.add(k.substring(0,1).toUpperCase() + (k.length()>1 ? k.substring(1) : ""));
@@ -290,23 +326,17 @@ public class RouteGeneration {
         }
 
         // 7) AMap 检索
-        java.util.List<Location> out = new java.util.ArrayList<>();
-        java.util.Set<String> dedup = new java.util.HashSet<>();
-        Double originLat, originLng;
-        if (location != null) { originLat = location.latitude; originLng = location.longitude; } else {
-            originLng = null;
-            originLat = null;
-        }
+        List<Location> out = new ArrayList<>();
+        Set<String> dedup = new HashSet<>();
+        Double originLat = location != null ? location.latitude : null;
+        Double originLng = location != null ? location.longitude : null;
 
-        final int RADIUS_M = 4000;
+        final int RADIUS_M = 5000;   // 半径放大
         final int PAGE_SZ  = 25;
-        final int MAX_PAGES = 3;
+        final int MAX_PAGES = 5;     // 分页增加
 
-        // 小工具：执行一次请求并收集（加入中文日志）
-        java.util.function.BiFunction<String, Boolean, Integer> runQuery = (kw, useAround) -> {
+        BiFunction<String, Boolean, Integer> runQuery = (kw, useAround) -> {
             int added = 0;
-            // —— 关键字日志：搜索关键词
-            Log.d(TAG, "搜索关键词：" + kw + (useAround ? "（around）" : "（text）"));
             for (int page = 1; page <= MAX_PAGES; page++) {
                 String url;
                 try {
@@ -314,13 +344,13 @@ public class RouteGeneration {
                         url = "https://restapi.amap.com/v3/place/around"
                                 + "?location=" + originLng + "," + originLat
                                 + "&radius=" + RADIUS_M
-                                + "&keywords=" + java.net.URLEncoder.encode(kw, "UTF-8")
+                                + "&keywords=" + URLEncoder.encode(kw, "UTF-8")
                                 + "&sortrule=distance&output=json&extensions=base"
                                 + "&offset=" + PAGE_SZ + "&page=" + page
                                 + "&key=" + AMAP_KEY;
                     } else {
                         url = "https://restapi.amap.com/v3/place/text"
-                                + "?keywords=" + java.net.URLEncoder.encode(kw, "UTF-8")
+                                + "?keywords=" + URLEncoder.encode(kw, "UTF-8")
                                 + "&citylimit=false&output=json&extensions=base"
                                 + "&offset=" + PAGE_SZ + "&page=" + page
                                 + "&key=" + AMAP_KEY;
@@ -330,13 +360,7 @@ public class RouteGeneration {
                 JSONObject resp;
                 try { resp = httpGet(url); } catch (Exception e1) { break; }
                 if (resp == null) break;
-
-                String status = resp.optString("status","0");
-                if (!"1".equals(status)) {
-                    String info = resp.optString("info","");
-                    Log.w(TAG, "AMap status!=1 kw=" + kw + " useAround=" + useAround + " info=" + info);
-                    break;
-                }
+                if (!"1".equals(resp.optString("status","0"))) break;
 
                 JSONArray pois = resp.optJSONArray("pois");
                 if (pois == null || pois.length() == 0) break;
@@ -348,16 +372,16 @@ public class RouteGeneration {
                     if (!loc.contains(",")) continue;
                     String[] ll = loc.split(",");
                     if (ll.length != 2) continue;
-
                     double lat, lng;
                     try { lat = Double.parseDouble(ll[1]); lng = Double.parseDouble(ll[0]); }
                     catch (NumberFormatException nfe) { continue; }
 
                     String id = p.optString("id","");
-                    if (!dedup.add(id + "#" + loc)) continue;
+                    String name = p.optString("name","");
+                    String dedupKey = id.isEmpty() ? (name + "#" + loc) : id;
+                    if (!dedup.add(dedupKey)) continue;
 
-                    String cleanName = p.optString("name","")
-                            .replaceAll("\\s*[\\(（【][^\\)）】]*[\\)）】]\\s*", " ")
+                    String cleanName = name.replaceAll("\\s*[\\(（【][^\\)）】]*[\\)）】]\\s*", " ")
                             .trim().replaceAll("\\s{2,}"," ");
                     if (cleanName.isEmpty()) continue;
 
@@ -367,33 +391,38 @@ public class RouteGeneration {
                     L.setLongitude(lng);
                     out.add(L);
                     added++;
-                    if (out.size() >= 100) {
-                        // —— 关键字日志：搜索结果（截断）
-                        Log.d(TAG, "搜索结果：新增 " + added + " 条（已达上限，提前结束）");
-                        return added;
-                    }
+                    if (out.size() >= 150) return added;
                 }
             }
-            // —— 关键字日志：搜索结果
-            Log.d(TAG, "搜索结果：新增 " + added + " 条");
             return added;
         };
 
-        // 7.1 先试原始/扩展关键词
+        // 7.1 扩展关键词搜索
         for (String kw : expanded) {
             if (originLat != null && originLng != null) {
-                int a1 = runQuery.apply(kw, true);     // around
-                if (a1 == 0) {
-                    runQuery.apply(kw, false);         // around 无则 text 兜底
-                }
+                int a1 = runQuery.apply(kw, true);
+                if (a1 == 0) runQuery.apply(kw, false);
             } else {
-                runQuery.apply(kw, false);             // 无定位 → 直接 text
+                runQuery.apply(kw, false);
             }
         }
 
-        // 7.2 仍为空：强制中文同义词再跑一轮
+        // 7.2 针对 KFC 特殊兜底
+        if (expanded.contains("KFC") || expanded.contains("肯德基")) {
+            List<String> kfcVariants = Arrays.asList("KFC","肯德基");
+            for (String kw : kfcVariants) {
+                if (originLat != null && originLng != null) {
+                    runQuery.apply(kw, true);
+                    runQuery.apply(kw, false);
+                } else {
+                    runQuery.apply(kw, false);
+                }
+            }
+        }
+
+        // 7.3 兜底中文品牌名
         if (out.isEmpty()) {
-            java.util.List<String> forceZh = new java.util.ArrayList<>();
+            List<String> forceZh = new ArrayList<>();
             for (String kw : expanded) {
                 if (kw.equalsIgnoreCase("KFC")) forceZh.add("肯德基");
                 if (kw.equalsIgnoreCase("Starbucks")) forceZh.add("星巴克");
@@ -403,27 +432,26 @@ public class RouteGeneration {
             }
             for (String kw : forceZh) {
                 if (originLat != null && originLng != null) {
-                    int a1 = runQuery.apply(kw, true);
-                    if (a1 == 0) runQuery.apply(kw, false);
+                    runQuery.apply(kw, true);
+                    runQuery.apply(kw, false);
                 } else {
                     runQuery.apply(kw, false);
                 }
             }
         }
 
-        // —— 汇总日志：总搜索结果（列出前若干名称）
-        if (!out.isEmpty()) {
-            StringBuilder names = new StringBuilder();
-            int preview = Math.min(out.size(), 10);
-            for (int i = 0; i < preview; i++) {
-                if (i > 0) names.append("，");
-                names.append(out.get(i).getName());
-            }
-            if (out.size() > preview) names.append("，…");
-            Log.d(TAG, "搜索结果：共 " + out.size() + " 条；示例：" + names);
-        } else {
-            Log.d(TAG, "搜索结果：空（未命中任何POI）");
+        Log.e(TAG,"排序查到的KFC时用的当前位置："+originLat+","+originLng);
+        // 8) 排序（从近到远）
+        if (originLat != null && originLng != null) {
+            out.sort(Comparator.comparingDouble(
+                    L -> MapTool.distanceBetween(
+                            new LatLng(originLat, originLng),
+                            new LatLng(L.getLatitude(), L.getLongitude())
+                    )
+            ));
         }
+
+        // 9) 转 JSONArray
         JSONArray result = new JSONArray();
         for (Location L : out) {
             JSONObject o = new JSONObject();
@@ -432,15 +460,9 @@ public class RouteGeneration {
             o.put("longitude", L.getLongitude());
             result.put(o);
         }
-
-        // 汇总日志
-        Log.d(TAG, "搜索结果：共 " + result.length() + " 条；示例：" +
-                (result.length() > 0 ? result.optJSONObject(0).optString("name","") : "—"));
-
         return result;
-
-
     }
+
 
 
     // 计算真实步行距离（分段调用路线规划，再相加）
@@ -533,17 +555,16 @@ public class RouteGeneration {
                         "1.JSON的结构示例：{\"waypoints\":[{\"name\":\"\",\"lat\":0,\"lng\":0},...]}" +
                         "2.请根据用户需求和地点列表的经纬度来设计一个路线（排在前面的视为先前往)，每个相邻途径点之间的距离不要太远" +
                         "3.如果用户没有明确目的地且意图仅仅是在附近散步，请让终点接近起点。" +
-                        "4.如果用户没有明确的起点，那默认起点为用户当前位置:"+location+"如果用户指定了起点则用其作为起点" +
-                        "5.如果用户指定了终点，则直接返回起点，终点两个地点组成的json（如果还指定了途径点，请加在中间。如果没有指定途径点就绝对不要添加多余的途径点）"+
+                        "4.如果用户没有明确的起点，那默认起点为用户当前位置:" + location + "如果用户指定了起点则用其作为起点" +
+                        "5.****如果用户指定了终点，则直接返回起点，终点两个地点组成的json（如果还指定了途径点，请加在中间。如果没有指定途径点就绝对不要添加多余的途径点)****" +
                         "6.请根据传输给你的经纬度计算大致的总路线长度，确保整个路线的长度不要太短（2-3公里比较合适），路线不要太曲折（经纬的变化是有规律的）。" +
                         "7.若包含“避开人多/想安静”等词，也请在选点时考虑如何能实现用户的需求。" +
                         "请必须返回且仅返回一个要求的JSON结构并仔细阅读下面全部的POI列表,越靠前的POI距离用户当前位置越近。" +
                         "JSON的结构示例：{\"waypoints\":[{\"name\":\"\",\"lat\":0,\"lng\":0},...]}";
 
-        // === 1) few-shot 示例：长版示例输入（含长 POI 列表 + 用户需求）与其参考答案 ===
 
-        String fewShotUser      = "I wanna walk around my apartment";   // 长版示例用户输入（含长 POI+需求）
-        // 2) 本次真实 payload
+
+        // === 真实 payload：加入事件/天气等（保留你原先的 fetchTrafficEventsOnce）===
         JSONArray eventInfo = fetchTrafficEventsOnce(location, 3000);
         JSONObject payload = new JSONObject()
                 .put("user_request", userUtter)
@@ -552,25 +573,30 @@ public class RouteGeneration {
 
         Log.e(TAG, "发给gpt的内容如下：" + payload);
 
-        // 3) 组装对话历史：system -> few-shot(user, assistant) -> real user
+        // === 组装对话历史：system -> few-shot -> real user（保留你的原顺序）===
         ChatbotHelper helper = new ChatbotHelper(OPENAI_KEY);
         JSONArray hist = new JSONArray()
                 .put(new JSONObject().put("role", "system").put("content",
                         sysPrompt + "\n参考下面的示例输入输出对，严格按照相同的 JSON 结构返回结果。"))
-                // Few-shot
-                .put(new JSONObject().put("role", "user").put("content", fewShotUser)) // 示例输入
-                .put(new JSONObject().put("role", "assistant").put("content", buildSuccessExampleAnswer())) // 示例输出
-                // Real request
+                // Few-shot（示例输入/输出）
+                .put(new JSONObject().put("role", "user").put("content", "I wanna walk around my apartment"))
+                .put(new JSONObject().put("role", "assistant").put("content", buildSuccessExampleAnswer()))
+                // 你原来的第二组 few-shot
                 .put(new JSONObject().put("role", "user").put("content", "I wanna walk to a park"))
                 .put(new JSONObject().put("role", "assistant").put("content", buildSuccessExampleAnswer2()))
-
+                // 真实请求（只把 JSON 作为 user）
                 .put(new JSONObject().put("role", "user").put("content", payload.toString()));
 
+        // === 新增：把 ChatbotFragment 的完整对话历史当作 system 插到最前（若你已实现 provider）===
+        // 若你已添加 setTranscriptProvider/safeGetTranscript/prependTranscript，则下面两行会把完整 history 注入给 GPT
+        String transcript = safeGetTranscript();  // 若未设置 provider，会返回空字符串
+        hist = prependTranscript(hist, transcript);
 
-        // 4) 发送并等待
+        // === 发送并等待 ===
         CountDownLatch latch = new CountDownLatch(1);
         final String[] reply = new String[1];
-
+        Log.e(TAG,"hist="+hist);
+        Log.e(TAG,"payload="+payload.toString());
         helper.sendMessage(payload.toString(), hist, new ChatbotResponseListener() {
             @Override public void onResponse(String r) { reply[0] = r; latch.countDown(); }
             @Override public void onFailure(String e)   { reply[0] = null; latch.countDown(); }
@@ -579,7 +605,7 @@ public class RouteGeneration {
         latch.await(40, TimeUnit.SECONDS);
         if (reply[0] == null) return null;
 
-        // 5) 解析仅包含 waypoints 的 JSON
+        // === 解析仅包含 waypoints 的 JSON（保留你原本的解析流程，不使用 parseSelectedRoute）===
         Log.e(TAG, reply[0]);
         String cleaned = extractBalancedJson(stripCodeFence(reply[0]));
         JSONObject res = new JSONObject(cleaned);
@@ -602,6 +628,8 @@ public class RouteGeneration {
 
 
 
+
+
     /* =========================================================
      *  内部数据类
      * ========================================================= */
@@ -616,6 +644,7 @@ public class RouteGeneration {
             waypoints = w; waypointNames = names;
         }
     }
+
 
     /* =========================================================
      *  HTTP GET
@@ -641,7 +670,7 @@ public class RouteGeneration {
                 if (raw == null) throw new IOException("No response body, code=" + code);
 
                 String enc = c.getContentEncoding();
-                InputStream is = "gzip".equalsIgnoreCase(enc) ? new java.util.zip.GZIPInputStream(raw) : raw;
+                InputStream is = "gzip".equalsIgnoreCase(enc) ? new GZIPInputStream(raw) : raw;
 
                 try (BufferedInputStream bis = new BufferedInputStream(is);
                      ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
@@ -656,7 +685,7 @@ public class RouteGeneration {
                     }
                     return new JSONObject(body);
                 }
-            } catch (java.io.InterruptedIOException e) {
+            } catch (InterruptedIOException e) {
                 // 仅对超时做有限重试
                 if (attempt < maxRetry) {
                     attempt++;
@@ -799,37 +828,61 @@ public class RouteGeneration {
 //   - perTileMax: 每个tile最多抓多少条（分页累加，受AMap上限影响）
 //   - globalMax: 全局上限（比如 5000）
     // 以“中心优先（方案A）”顺序抓取POI
-    private static JSONArray fetchPOIs(
+    public static JSONArray fetchPOIs(
             LatLng center,
             int halfSideMeters,
             int tileSizeMeters,
             int perTileMax,
-            int globalMax,
-            boolean dedupById
+            int globalMax
     ) throws Exception {
 
-        // 生成所有 tile 的中心点
-        java.util.List<LatLng> tiles = buildTileCenters(center, halfSideMeters, tileSizeMeters);
+        final boolean dedupById = true;
 
-        // 按“距离中心点的米制平方距离”升序排序，实现从中心向外检索
-        java.util.Collections.sort(tiles, new java.util.Comparator<LatLng>() {
-            @Override public int compare(LatLng a, LatLng b) {
-                double da = squaredMetersDistance(center, a);
-                double db = squaredMetersDistance(center, b);
-                return Double.compare(da, db);
-            }
+        // 1) tiles 兜底
+        List<LatLng> tiles = buildTileCenters(center, halfSideMeters, tileSizeMeters);
+        if (tiles == null || tiles.isEmpty()) {
+            Log.w("POI_DEBUG", "buildTileCenters returned null/empty, center=" + center);
+            return new JSONArray();
+        }
+
+        // 移除其中的 null，避免 comparator NPE
+        tiles.removeIf(t -> t == null);
+
+        // 2) 从离中心近到远
+        Collections.sort(tiles, (a, b) -> {
+            double da = squaredMetersDistance(center, a);
+            double db = squaredMetersDistance(center, b);
+            return Double.compare(da, db);
         });
 
-        // 每个 tile 使用“外接圆半径”，确保完整覆盖该 tile
-        final int radius = (int) Math.ceil(Math.sqrt(2) * tileSizeMeters / 2.0*1.1);
+        // 3) tile 外接圆半径，略放大 10%
+        final int radius = Math.max(
+                20,
+                (int) Math.ceil(Math.sqrt(2) * tileSizeMeters / 2.0 * 1.10)
+        );
 
         JSONArray out = new JSONArray();
-        java.util.Set<String> seenIds = dedupById ? new java.util.HashSet<>() : null;
+        Set<String> seenIds = dedupById ? new HashSet<>() : null;
+        boolean hitGlobal = false;
 
+        // 4) 每个 tile 分页拉取；任何一个 tile 失败只跳过它
         for (LatLng t : tiles) {
-            JSONArray arr = fetchNearbyPOIs(t, radius, perTileMax);
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = arr.get(i);
+            if (t == null) continue;
+
+            JSONArray arrForTile;
+            try {
+                arrForTile = fetchNearbyPOIs(t, radius, perTileMax);
+            } catch (Throwable tileErr) {
+                Log.e("POI_DEBUG", "fetchNearbyPOIs failed at tile=" + t, tileErr);
+                continue;
+            }
+
+            if (arrForTile == null) continue;
+
+            for (int i = 0; i < arrForTile.length(); i++) {
+                Object v = arrForTile.opt(i);
+                if (v == null) continue;
+
                 if (v instanceof JSONObject) {
                     JSONObject jo = (JSONObject) v;
 
@@ -840,108 +893,88 @@ public class RouteGeneration {
                             seenIds.add(id);
                         }
                     }
-                    String s = String.format( java.util.Locale.US,
-                            "%s,(%.6f,%.6f)",
-                            jo.optString("name"),
-                            jo.optDouble("lat"),
-                            jo.optDouble("lng")
-                    );
+
+                    // 统一成 "name,(lat,lng)" 字符串，后续排序和 UI 更简单
+                    String s = String.format(Locale.US, "%s,(%.6f,%.6f)",
+                            jo.optString("name", ""),
+                            jo.optDouble("lat", Double.NaN),
+                            jo.optDouble("lng", Double.NaN));
                     out.put(s);
+
                 } else if (v instanceof String) {
+                    // 你的 fetchNearbyPOIs 返回本就是字符串
                     out.put((String) v);
                 }
 
                 if (out.length() >= globalMax) {
-                    break; // 达到全局上限立即返回
+                    hitGlobal = true;
+                    break; // 先跳出内层
                 }
             }
+
+            if (hitGlobal) break; // 再跳出外层
         }
 
+        // 5) 用 center 作为参考点排序（不要依赖某个静态的 location 变量）
+        JSONArray result = sortByDistance(out, center);
 
-
-        JSONArray result=sortByDistance(out);
-        // 假设你想调试输出 out
-        String outStr = result.toString();
-
-// 每条最多 3000 字符（留点余量，避免其他信息超长）
-        int maxLogSize = 3000;
+        // 6) 大结果分段打印，避免 log 被截断
+        final String outStr = result.toString();
+        final int maxLogSize = 3000;
         for (int i = 0; i < outStr.length(); i += maxLogSize) {
             int end = Math.min(outStr.length(), i + maxLogSize);
-            Log.e("POI_DEBUG", outStr.substring(i, end));
+            Log.d("POI_DEBUG", outStr.substring(i, end));
         }
 
         return result;
     }
 
-    private static JSONArray sortByDistance(JSONArray out) throws JSONException {
-        if (location != null) {
-            java.util.List<Object> tempList = new java.util.ArrayList<>();
-            for (int i = 0; i < out.length(); i++) {
-                tempList.add(out.get(i));
-            }
+    private static JSONArray sortByDistance(JSONArray in, LatLng ref) throws JSONException {
+        if (in == null || in.length() == 0 || ref == null) return (in != null ? in : new JSONArray());
 
-            java.util.Collections.sort(tempList, new java.util.Comparator<Object>() {
-                @Override
-                public int compare(Object o1, Object o2) {
-                    double d1 = Double.MAX_VALUE;
-                    double d2 = Double.MAX_VALUE;
-
-                    try {
-                        if (o1 instanceof String) {
-                            // 从字符串里提取 (lat,lng)
-                            String str = (String) o1;
-                            int idx = str.indexOf('(');
-                            int idx2 = str.indexOf(')');
-                            if (idx >= 0 && idx2 > idx) {
-                                String[] parts = str.substring(idx + 1, idx2).split(",");
-                                double lat = Double.parseDouble(parts[0]);
-                                double lng = Double.parseDouble(parts[1]);
-                                d1 = squaredMetersDistance(location, new LatLng(lat, lng));
-                            }
-                        } else if (o1 instanceof JSONObject) {
-                            JSONObject jo = (JSONObject) o1;
-                            double lat = jo.optDouble("lat", Double.NaN);
-                            double lng = jo.optDouble("lng", Double.NaN);
-                            if (!Double.isNaN(lat) && !Double.isNaN(lng)) {
-                                d1 = squaredMetersDistance(location, new LatLng(lat, lng));
-                            }
-                        }
-
-                        if (o2 instanceof String) {
-                            String str = (String) o2;
-                            int idx = str.indexOf('(');
-                            int idx2 = str.indexOf(')');
-                            if (idx >= 0 && idx2 > idx) {
-                                String[] parts = str.substring(idx + 1, idx2).split(",");
-                                double lat = Double.parseDouble(parts[0]);
-                                double lng = Double.parseDouble(parts[1]);
-                                d2 = squaredMetersDistance(location, new LatLng(lat, lng));
-                            }
-                        } else if (o2 instanceof JSONObject) {
-                            JSONObject jo = (JSONObject) o2;
-                            double lat = jo.optDouble("lat", Double.NaN);
-                            double lng = jo.optDouble("lng", Double.NaN);
-                            if (!Double.isNaN(lat) && !Double.isNaN(lng)) {
-                                d2 = squaredMetersDistance(location, new LatLng(lat, lng));
-                            }
-                        }
-
-                    } catch (Exception ignore) {}
-
-                    return Double.compare(d1, d2);
-                }
-            });
-
-            // 重新写回 JSONArray
-            out = new JSONArray();
-            for (Object obj : tempList) {
-                out.put(obj);
-            }
+        List<Object> tmp = new ArrayList<>(in.length());
+        for (int i = 0; i < in.length(); i++) {
+            tmp.add(in.get(i));
         }
 
-        return out;
+        Collections.sort(tmp, (o1, o2) -> {
+            double d1 = distanceForAny(o1, ref);
+            double d2 = distanceForAny(o2, ref);
+            return Double.compare(d1, d2);
+        });
 
+        JSONArray out = new JSONArray();
+        for (Object obj : tmp) out.put(obj);
+        return out;
     }
+
+    // 同一个工具函数，既支持 "name,(lat,lng)" 也支持 JSONObject
+    private static double distanceForAny(Object o, LatLng ref) {
+        try {
+            if (o instanceof String) {
+                String str = (String) o;
+                int idx = str.indexOf('(');
+                int idx2 = str.indexOf(')');
+                if (idx >= 0 && idx2 > idx) {
+                    String[] parts = str.substring(idx + 1, idx2).split(",");
+                    if (parts.length == 2) {
+                        double lat = Double.parseDouble(parts[0].trim());
+                        double lng = Double.parseDouble(parts[1].trim());
+                        return squaredMetersDistance(ref, new LatLng(lat, lng));
+                    }
+                }
+            } else if (o instanceof JSONObject) {
+                JSONObject jo = (JSONObject) o;
+                double lat = jo.optDouble("lat", Double.NaN);
+                double lng = jo.optDouble("lng", Double.NaN);
+                if (!Double.isNaN(lat) && !Double.isNaN(lng)) {
+                    return squaredMetersDistance(ref, new LatLng(lat, lng));
+                }
+            }
+        } catch (Throwable ignore) {}
+        return Double.MAX_VALUE;
+    }
+
 
     // —— 辅助：快速米制近似的平方距离（用于排序，不参与精确计算）——
     private static double squaredMetersDistance(LatLng a, LatLng b) {
@@ -953,56 +986,92 @@ public class RouteGeneration {
 
 
     // ② 单tile拉取（不带types），直接返回 "名称,(lat,lng)" 的字符串数组
-    private static JSONArray fetchNearbyPOIs(
-            LatLng origin, int radiusMeter, int maxCount) throws Exception {
-
+    private static JSONArray fetchNearbyPOIs(LatLng origin, int radiusMeter, int maxCount) throws Exception {
         JSONArray slimArr = new JSONArray();
+        if (origin == null) return slimArr;
+
         int page = 1;
-        final int PAGE_SZ = 25; // AMap place/around 单页最大25
+        final int PAGE_SZ = 25; // AMap 单页最大 25
 
         while (slimArr.length() < maxCount) {
-
-            // —— 全局节流，同你原实现 —— //
+            // ——— 全局节流 ———
             synchronized (RouteGeneration.class) {
                 long diff = System.currentTimeMillis() - lastRequestTime;
                 if (diff < MIN_INTERVAL_MS) Thread.sleep(MIN_INTERVAL_MS - diff);
                 lastRequestTime = System.currentTimeMillis();
             }
 
+            // 基本参数检查（避免拼一个无 key 的 url）
+            if (AMAP_KEY == null || AMAP_KEY.isEmpty()) {
+                Log.e("POI_DEBUG", "AMAP_KEY is empty!");
+                break;
+            }
+
             String url = "https://restapi.amap.com/v3/place/around"
                     + "?location=" + origin.longitude + "," + origin.latitude
-                    + "&radius="   + radiusMeter
+                    + "&radius=" + radiusMeter
                     + "&output=json&extensions=base"
-                    + "&offset="   + PAGE_SZ
-                    + "&page="     + page
-                    + "&key="      + AMAP_KEY;
+                    + "&offset=" + PAGE_SZ
+                    + "&page=" + page
+                    + "&key=" + AMAP_KEY;
 
-            JSONObject resp = httpGet(url);
+            JSONObject resp;
+            try {
+                resp = httpGet(url);
+            } catch (Throwable netErr) {
+                Log.e("POI_DEBUG", "httpGet error, page=" + page + ", url=" + url, netErr);
+                break; // 本页失败就停
+            }
+
+            if (resp == null) {
+                Log.e("POI_DEBUG", "httpGet returned null, page=" + page);
+                break;
+            }
+
+            // AMap 常见结构：status=1 表示成功
+            String status = resp.optString("status", "0");
+            if (!"1".equals(status)) {
+                String info = resp.optString("info", "");
+                Log.w("POI_DEBUG", "AMap response status=" + status + ", info=" + info + ", page=" + page);
+                break;
+            }
+
             JSONArray pois = resp.optJSONArray("pois");
-            if (pois == null || pois.length() == 0) break;  // 真正无结果才退出
+            if (pois == null || pois.length() == 0) {
+                // 真正无结果才退出分页
+                break;
+            }
 
             for (int i = 0; i < pois.length(); i++) {
                 if (slimArr.length() >= maxCount) return slimArr;
 
-                JSONObject p = pois.getJSONObject(i);
-                String loc = p.optString("location");
-                if (loc == null || !loc.contains(",")) continue;
-                String[] ll = loc.split(",");
-                if (ll.length != 2) continue;
+                JSONObject p = pois.optJSONObject(i);
+                if (p == null) continue;
+
+                String loc = p.optString("location", "");
+                int comma = loc.indexOf(',');
+                if (comma <= 0) continue;
+
+                String lngStr = loc.substring(0, comma).trim();
+                String latStr = loc.substring(comma + 1).trim();
+
+                double lat, lng;
+                try {
+                    // 高德返回是 "lng,lat"
+                    lng = Double.parseDouble(lngStr);
+                    lat = Double.parseDouble(latStr);
+                } catch (NumberFormatException nfe) {
+                    continue;
+                }
 
                 String name = p.optString("name", "");
-                // 去除中英文括号及内容
-
-
-                double lat = Double.parseDouble(ll[1]);
-                double lng = Double.parseDouble(ll[0]);
-
-                String poiString = String.format(java.util.Locale.US, "%s,(%.6f,%.6f)", name, lat, lng);
+                String poiString = String.format(Locale.US, "%s,(%.6f,%.6f)", name, lat, lng);
                 slimArr.put(poiString);
             }
 
             page++; // 下一页
         }
+
         return slimArr;
     }
 
@@ -1010,7 +1079,7 @@ public class RouteGeneration {
 
     // ③ 生成tile中心（与你之前思路一致，近似换算，适用于城市小范围）
     // ③ 生成tile中心（与你之前思路一致，近似换算，适用于城市小范围）
-    private static java.util.List<LatLng> buildTileCenters(LatLng c, int halfSideMeters, int tileSizeMeters) {
+    private static List<LatLng> buildTileCenters(LatLng c, int halfSideMeters, int tileSizeMeters) {
         double mPerDegLat = 111000.0;
         double mPerDegLng = 111000.0 * Math.cos(Math.toRadians(c.latitude));
 
@@ -1021,7 +1090,7 @@ public class RouteGeneration {
         double minLat = c.latitude  - (halfSideMeters / mPerDegLat);
         double minLng = c.longitude - (halfSideMeters / mPerDegLng);
 
-        java.util.List<LatLng> centers = new java.util.ArrayList<>();
+        List<LatLng> centers = new ArrayList<>();
         for (int r = 0; r < steps; r++) {
             for (int q = 0; q < steps; q++) {
                 double lat = minLat + (r + 0.5) * latStepDeg;
@@ -1044,6 +1113,11 @@ public class RouteGeneration {
         return R * c;
     }
 
+    public static SelectedRoute GetPreferredRoute(){
 
+        return null;
+    }
+
+    public static void uploadRoute(){}
 }
 

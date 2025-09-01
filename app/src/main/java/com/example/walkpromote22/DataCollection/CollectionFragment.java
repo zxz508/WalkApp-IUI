@@ -131,12 +131,7 @@ public class CollectionFragment extends Fragment {
 
             int feature=parseScore(inputFeature.getText().toString());
 
-            // 若当前路线为空，则创建新 Route
-            if (currentRoute == null) {
-                routeName = "Route " + System.currentTimeMillis();
-                currentRoute = new Route(routeName);
 
-            }
             new Thread(() -> {
                 String addressName = getAddressFromAPI(latitude, longitude);
                 if (addressName != null) {
@@ -208,30 +203,6 @@ public class CollectionFragment extends Fragment {
 
 
 
-            new RouteSyncManager(requireContext()).createRoute(routeName, new RouteSyncManager.OnRouteCreated() {
-                @Override
-                public void onSuccess(long routeId) {
-                    // 这里你可以更新本地数据库中的 route，并存储 routeId（如果你愿意保留）
-
-                    currentRoute.setId(routeId);
-                    AppDatabase.getDatabase(getContext()).routeDao().insert(currentRoute);
-                    saveAllLocations(currentRouteLocations);
-                    requireActivity().runOnUiThread(() -> {
-                        Toast.makeText(getContext(), "Route saved ", Toast.LENGTH_SHORT).show();
-                    });
-
-
-                    currentRoute = null;
-                    currentRouteLocations.clear();
-
-                }
-
-                @Override
-                public void onFail(Exception e) {
-                    Log.e(TAG, "Fail to connect to server", e);  // ✅ 打印异常堆栈
-
-                }
-            });
 
             // （若需要）更新 Route 数据到数据库，此处可调用 updateRoute 方法
             // 清空当前规划，为下一次规划做准备，同时清空地图上的 Marker 和 Polyline
@@ -378,7 +349,7 @@ public class CollectionFragment extends Fragment {
         Route routeCopy = currentRoute; // 提前拷贝副本
         Log.e(TAG,"rout_id="+routeCopy.getId());
         for(Location location : locations){
-            saveLocation(routeCopy,location.getIndex_num(),location.getId(), location.getName(), location.getLatitude(), location.getLongitude(), location.getFeatures());
+            saveLocation(routeCopy,location.getIndexNum(),location.getId(), location.getName(), location.getLatitude(), location.getLongitude(), location.getFeatures());
         }
     }
 
@@ -396,18 +367,17 @@ public class CollectionFragment extends Fragment {
 
         // 2) 云端
         LocationDTO dto = new LocationDTO();
-        dto.setIndex_num(index);
+        dto.setIndexNum(index);
         dto.setId(id);
         Log.e(TAG,"rout_id="+routeCopy.getId());
-        dto.setRoute_id(routeCopy.getId());
+        dto.setRouteId(routeCopy.getId());
         dto.setName(name);
         dto.setLatitude(lat);
         dto.setLongitude(lon);
         dto.setFeatures(feature);
         List<LocationDTO> list=new ArrayList<>();
         list.add(dto);
-        new RouteSyncManager(requireContext())
-                .uploadLocations(list);
+
     }
 
 
@@ -438,6 +408,7 @@ public class CollectionFragment extends Fragment {
             mapTool.onResume();
             // 每次进入页面时清空地图
             mapTool.getMapView().getMap().clear();
+
         }
     }
 

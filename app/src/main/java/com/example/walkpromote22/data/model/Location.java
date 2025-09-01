@@ -7,23 +7,24 @@ import androidx.room.ForeignKey;
 import androidx.room.Index;
 import androidx.annotation.NonNull;
 
+import java.io.Serializable;
 import java.security.SecureRandom;
 
 @Entity(tableName = "locations",
         foreignKeys = @ForeignKey(entity = Route.class,
                 parentColumns = "id",
-                childColumns = "route_id",
+                childColumns = "routeId",
                 onDelete = ForeignKey.CASCADE),
-        indices = {@Index("route_id")})
-public class Location{
+        indices = {@Index("routeId")})
+public class Location implements Serializable {
 
     @PrimaryKey
     @NonNull
     private long id=generateRandomLong();
 
-    private int index_num;
+    private int indexNum;
 
-    private Long route_id;  // 允许 routeId 为 null，表示该 Location 可能不绑定任何 Route
+    private Long routeId;  // 允许 routeId 为 null，表示该 Location 可能不绑定任何 Route
     @NonNull
     private String name; // 地点名称
 
@@ -37,9 +38,9 @@ public class Location{
     public Location() {}
     // 构造方法：允许 routeId 为 null，表示不绑定任何 Route
     @Ignore
-    public Location(int index_num, Long route_id, @NonNull String name, double latitude, double longitude, int features) {
-        this.route_id = route_id;
-        this.index_num = index_num;
+    public Location(int indexNum, Long routeId, @NonNull String name, double latitude, double longitude, int features) {
+        this.routeId = routeId;
+        this.indexNum = indexNum;
         this.name = name;
         this.latitude = latitude;
         this.longitude = longitude;
@@ -47,10 +48,10 @@ public class Location{
 
     }
     @Ignore
-    public Location(int index_num, long id, Long route_id, @NonNull String name, double latitude, double longitude, int features) {
-        this.route_id = route_id;
+    public Location(int indexNum, long id, Long routeId, @NonNull String name, double latitude, double longitude, int features) {
+        this.routeId = routeId;
         this.id=id;
-        this.index_num = index_num;
+        this.indexNum = indexNum;
         this.name = name;
         this.latitude = latitude;
         this.longitude = longitude;
@@ -58,12 +59,12 @@ public class Location{
 
     }
 
-    public void setIndex_num(int index_num) {
-        this.index_num = index_num;
+    public void setIndexNum(int indexNum) {
+        this.indexNum = indexNum;
     }
 
-    public int getIndex_num() {
-        return index_num;
+    public int getIndexNum() {
+        return indexNum;
     }
 
     // Getters 和 Setters
@@ -75,12 +76,12 @@ public class Location{
         this.id = id;
     }
 
-    public Long getRoute_id() {
-        return route_id;
+    public Long getRouteId() {
+        return routeId;
     }
 
-    public void setRoute_id(Long route_id) {
-        this.route_id = route_id;
+    public void setRouteId(Long routeId) {
+        this.routeId = routeId;
     }
 
     @NonNull

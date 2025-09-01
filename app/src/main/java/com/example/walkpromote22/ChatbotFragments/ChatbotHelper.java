@@ -63,6 +63,7 @@ public class ChatbotHelper {
      * @param listener 回调接口，返回 GPT 回复或错误信息
      */
     public void sendMessage(String userMessage, JSONArray conversationHistory, ChatbotResponseListener listener) {
+
         // 将用户消息添加到对话历史
         try {
             conversationHistory.put(new JSONObject()
@@ -80,7 +81,7 @@ public class ChatbotHelper {
 
         // 传递整个对话历史给 GPT
         JSONArray finalConversationHistory = conversationHistory;
-        sendChatMessages("gpt-5-chat", conversationHistory, 500, 0.7, new okhttp3.Callback() {
+        sendChatMessages("gpt-5-chat-latest", conversationHistory, 500, 0.7, new okhttp3.Callback() {
             @Override
             public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
                 listener.onFailure("Failed to connect to Chatbot: " + e.getMessage());
@@ -313,7 +314,7 @@ public class ChatbotHelper {
             userMsg.put("content", contentArray);
             messages.put(userMsg);
 
-            sendChatMessages("gpt-5-chat", messages, 500, 0.7, callback);
+            sendChatMessages("gpt-5-chat-latest", messages, 500, 0.7, callback);
         } catch (Exception e) {
             callback.onFailure(null, new IOException("Error creating photo message JSON", e));
         }

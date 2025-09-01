@@ -114,6 +114,7 @@ public class StepSyncManager {
         io.execute(() -> {
             Step s = stepDao.getStepByDate(userKey, today);
             if (s == null) return;
+            if (s.getStepCount()<0) s.setStepCount(0);
 
             List<StepDTO> one = Collections.singletonList(
                     new StepDTO(s.getUserKey(), s.getDate(),
