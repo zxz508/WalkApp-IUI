@@ -7,11 +7,14 @@ import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitializ
 import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
 import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
 import static com.example.walkpromote22.WalkFragments.SmartGuide.buildUserInputs;
+import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 import static com.example.walkpromote22.tool.MapTool.rank;
 import static com.example.walkpromote22.tool.MapTool.trimLocationName;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -24,8 +27,10 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.TypedValue;
@@ -39,6 +44,8 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.widget.AppCompatButton;
@@ -68,6 +75,7 @@ import com.amap.api.services.route.RouteSearch;
 import com.amap.api.services.route.WalkRouteResult;
 import com.example.walkpromote22.Manager.RouteSyncManager;
 import com.example.walkpromote22.data.dao.StepDao;
+import com.example.walkpromote22.data.dao.UserDao;
 import com.example.walkpromote22.data.database.AppDatabase;
 import com.example.walkpromote22.data.dto.LocationDTO;
 import com.example.walkpromote22.data.model.Route;
@@ -107,6 +115,8 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 public class ChatbotFragment extends Fragment {
+    private ActivityResultLauncher<String[]> requestPermsLauncher;   // 前台/多权限
+    private ActivityResultLauncher<String>   requestBgLocLauncher;   // 后台定位
 
     private boolean debugAutoRouteOnce = false;
 
@@ -173,7 +183,7 @@ public class ChatbotFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
-
+        view.post(this::ensurePermissions);
         userInput = view.findViewById(R.id.user_input);
         Button sendButton = view.findViewById(R.id.send_arrow);
         recyclerView = view.findViewById(R.id.recycler_view_messages);
@@ -232,16 +242,41 @@ public class ChatbotFragment extends Fragment {
         TextView weatherContent = view.findViewById(R.id.weather_content);
         appDatabase     = AppDatabase.getDatabase(requireContext());
 
-        // ✅ 提前获取定位信息（只获取一次并存入 userLocation）and 查询天气
-     /*   prefs.edit().putString("location_lat", String.valueOf(location.latitude)).apply();
-        prefs.edit().putString("location_long", String.valueOf(location.longitude)).apply();*/
+
 
         SharedPreferences prefs = requireContext().getSharedPreferences("AppData", Context.MODE_PRIVATE);
         weather = prefs.getString("weather", null);
-        userLocation=new LatLng(Double.parseDouble(Objects.requireNonNull(prefs.getString("location_lat", null))),Double.parseDouble(Objects.requireNonNull(prefs.getString("location_long", null))));
+        try {
+            getCurrentLocation(true, requireContext(), new LocationCallback() {
+                @Override
+                public void onLocationReceived(LatLng location) throws Exception {
+                    userLocation=location;
+                }
+
+                @Override
+                public void onLocationFailed(String error) {
+
+                    Log.e(TAG,"chatbotFragment内部调用getCurrentLocation失败");
+                }
+            });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         UserPreferences userPref = new UserPreferences(requireContext());
         userKey=userPref.getUserKey();
 
+
+
+        getParentFragmentManager().setFragmentResultListener(
+                "APP_TOOL_EVENT",
+                this,
+                (requestKey, result) -> {
+                    String payload = result.getString("payload", "");
+                    if (payload != null && !payload.isEmpty()) {
+                        injectAppToolPayload(payload);
+                    }
+                }
+        );
 
 
 
@@ -296,7 +331,7 @@ public class ChatbotFragment extends Fragment {
                             "When you want to get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
                             "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
                             "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}"+
-                            "The time now is"+formatted+", and the weather now is"+weather+
+                            "The time now is"+formatted+", and the weather now is"+weather+",the user is at"+userLocation+
                             "You can only use token twice in a row without the user requesting it"+
                             "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
                             "Here's a sample conversation1 I'd like you to have with your users(Only for sample,you should have different talk in different weather,time and so on):" +
@@ -357,6 +392,55 @@ public class ChatbotFragment extends Fragment {
             }
         });
     }
+
+
+
+
+
+
+    private void startSafeLocationStuff() {
+        // 所有敏感调用前再做一次保护 & try/catch
+        boolean locGranted =
+                ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                        || ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED;
+
+        if (!locGranted) return;
+
+        try {
+            // TODO: 你的定位/地图调用（例如 AMap 的 myLocation、位置更新、路线规划等）
+        } catch (SecurityException se) {
+            se.printStackTrace();
+            // 这里可以提示用户开启权限，而不是崩溃
+        }
+    }
+
+    private void showGoToSettingsDialog() {
+        new AlertDialog.Builder(requireContext())
+                .setTitle("需要权限")
+                .setMessage("请在设置中开启定位/活动识别权限，以正常使用路线与步数功能。")
+                .setPositiveButton("去设置", (d, w) -> {
+                    Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    i.setData(Uri.fromParts("package", requireContext().getPackageName(), null));
+                    startActivity(i);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showExplainWhyDialog() {
+        new AlertDialog.Builder(requireContext())
+                .setTitle("权限说明")
+                .setMessage("我们需要定位来生成步行路线，并需要活动识别统计步数。")
+                .setPositiveButton("知道了", (d, w) -> ensurePermissions())
+                .show();
+    }
+
+
+
+
+
     /* 1) 把 promote 放到最前面且只插一次（已存在则搬到首位） */
     private JSONArray ensureSystemPromote(JSONArray history, String promote) {
         if (promote == null || promote.isEmpty() || history == null) return history;
@@ -469,6 +553,26 @@ public class ChatbotFragment extends Fragment {
         final AtomicReference<java.util.function.Consumer<String>> handleRef = new java.util.concurrent.atomic.AtomicReference<>();
         final AtomicReference<java.util.function.Consumer<String>> feedRef   = new java.util.concurrent.atomic.AtomicReference<>();
 
+        try {
+            getCurrentLocation(true, requireContext(), new LocationCallback() {
+                @Override
+                public void onLocationReceived(LatLng location) throws Exception {
+                    userLocation=location;
+                    if (shouldInjectAgain(null, userLocation, lastLocInjectedAt, /*cooldownMs*/ 5000L, /*minDeltaMeters*/ 5f)) {
+                        injectUserLocationContext(userLocation, "UPDATE");
+                        lastLocInjectedAt = System.currentTimeMillis();
+                    }
+                }
+
+                @Override
+                public void onLocationFailed(String error) {
+
+                    Log.e(TAG,"chatbotFragment内部调用getCurrentLocation失败");
+                }
+            });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         // 把工具结果回喂给 GPT（再次走 LLM）
         feedRef.set((String toolPayload) -> {
             // === 新增：在发送前，把工具回执写入 全局 & 本地 & 当前 history ===
@@ -626,6 +730,54 @@ public class ChatbotFragment extends Fragment {
     }
 
 
+    // === 1) 工具风格注入：把 APP 事件当作“assistant”角色写入历史，然后把同样文本作为下一轮提示发给 LLM ===
+    public void injectAppToolPayload(String toolPayload) {
+        try {
+            org.json.JSONObject toolMsg = new org.json.JSONObject()
+                    .put("role", "assistant")
+                    .put("content", toolPayload == null ? "" : toolPayload);
+
+            if (conversationHistory != null) {
+                conversationHistory.put(toolMsg); // 全局历史
+            }
+            if (localConversationHistory != null) {
+                // 深拷贝写入本地历史，避免共享引用
+                localConversationHistory.put(new org.json.JSONObject(toolMsg.toString()));
+            }
+        } catch (Exception ignore) {}
+
+        final org.json.JSONArray historyToSend = localConversationHistory;
+
+        // 给模型的“下一轮输入”就直接用 toolPayload；这与你 feedRef 的做法保持一致
+        chatbotHelper.sendMessage(toolPayload == null ? "" : toolPayload, historyToSend,
+                new ChatbotResponseListener() {
+                    @Override public void onResponse(String reply) {
+                        // 对回复做一次轻量清理（去掉可能出现的令牌、代码块）
+                        String visible = cleanupVisible(reply);
+                        if (visible != null && !visible.isEmpty()) {
+                            requireActivity().runOnUiThread(() -> addChatMessage(visible, false));
+                        }
+                        // 注意：此路径不再触发 {Map_API_...} 等工具调用（鼓励话术用不到）
+                    }
+                    @Override public void onFailure(String error) {
+                        requireActivity().runOnUiThread(() ->
+                                addChatMessage("Failed to connect to Chatbot: " + error, false));
+                    }
+                });
+    }
+
+    // === 2) 轻量清理：把可能出现的令牌/代码块去掉，保持 UI 纯净 ===
+    private String cleanupVisible(String raw) {
+        if (raw == null) return "";
+        String v = raw;
+        v = v.replaceAll("(?is)```.*?```", " "); // 代码块
+        // 花括号令牌 & Request:{令牌}
+        v = v.replaceAll("(?i)\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|User_History|Navigation_API|Map_API(?:_All)?)\\s*\\}", " ");
+        v = v.replaceAll("(?i)Request\\s*:\\s*\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|User_History|Navigation_API|Map_API(?:_All)?)\\s*\\}", " ");
+        v = v.replaceAll("\\n{3,}", "\n\n").trim();
+        return v;
+    }
+
 
 
 
@@ -740,49 +892,110 @@ public class ChatbotFragment extends Fragment {
         }).start();
     }
 
-    private void handleStepRequest(AtomicReference<java.util.function.Consumer<String>> feedRef) {
+    // StepData_API 的执行：查库 -> 画图 -> 回喂GPT
+    private void handleStepRequest(java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
         new Thread(() -> {
             try {
-                // 取最近 7 天（含今天），按日期从旧到新拼成 JSON 数组
-                org.json.JSONArray daysArr = new org.json.JSONArray();
+                // === 1) 读取用户与数据库 ===
+                String userKey = requireContext()
+                        .getSharedPreferences("user_prefs", android.content.Context.MODE_PRIVATE)
+                        .getString("USER_KEY", null);
+                AppDatabase db   = AppDatabase.getDatabase(getContext());
+                StepDao stepDao  = db.stepDao();
+                UserDao userDao  = db.userDao();
 
-                // 使用 java.time（需要已启用 desugaring；一般 Android Gradle Plugin 4+ 项目默认可用）
-                java.time.LocalDate today = java.time.LocalDate.now();
-                java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+                // 体重（kg），失败则默认 70kg
+                float weight = 70f;
+                try { weight = userDao.getUserByKey(userKey).getWeight(); } catch (Exception ignore) {}
 
-                StepDao stepDao = appDatabase.stepDao(); // 你的 DAO
-                for (int i = 6; i >= 0; i--) {
-                    java.time.LocalDate d = today.minusDays(i);
-                    String dateStr = d.format(fmt);
+                // === 2) 计算过去7天（含今天）的日期范围 ===
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                java.util.Date today   = cal.getTime();
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -6);
+                java.util.Date startDate = cal.getTime();
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault());
 
-                    Step step = stepDao.getStepByDate(userKey, dateStr); // 可能为 null
-                    int steps = (step == null) ? 0 : step.getStepCount();
-                    double distanceKm;
+                // 有序 Map（保持日期顺序）
+                java.util.LinkedHashMap<String, Integer> stepsMap      = new java.util.LinkedHashMap<>();
+                java.util.LinkedHashMap<String, Float>   distanceMapM  = new java.util.LinkedHashMap<>(); // 米
+                java.util.LinkedHashMap<String, Float>   distanceKmMap = new java.util.LinkedHashMap<>(); // 公里（给图表）
+                java.util.LinkedHashMap<String, Float>   calorieMap    = new java.util.LinkedHashMap<>();
 
-                    // 如果你的表里已有 distance 字段并且有值，就直接用；否则简易估算：每步 ~0.7m
-                    if (step != null && step.distance > 0f) {
-                        distanceKm = step.distance; // 已存 KM
-                    } else {
-                        distanceKm = steps * 0.0007; // 0.7 m/步 → KM
+                // === 3) 循环取 7 天数据 ===
+                java.util.Calendar tmp = java.util.Calendar.getInstance();
+                tmp.setTime(startDate);
+                while (!tmp.getTime().after(today)) {
+                    String dateStr = sdf.format(tmp.getTime());
+                    Step stepRecord = stepDao.getStepByDate(userKey, dateStr);
+
+                    int steps = 0;
+                    float distanceM = 0f;
+                    if (stepRecord != null) {
+                        steps = Math.max(0, stepRecord.getStepCount());
+                        distanceM = Math.max(0f, stepRecord.getDistance()); // 米
                     }
+                    float distanceKm = distanceM / 1000f;
+                    // 卡路里公式（与你给的一致）
+                    float calories = distanceKm * weight * 1.036f;
 
-                    org.json.JSONObject one = new org.json.JSONObject();
-                    one.put("date", dateStr);
-                    one.put("steps", steps);
-                    one.put("distance_km", Math.round(distanceKm * 1000d) / 1000d); // 保留 3 位小数
-                    daysArr.put(one);
+                    stepsMap.put(dateStr, steps);
+                    distanceMapM.put(dateStr, distanceM);
+                    distanceKmMap.put(dateStr, distanceKm);
+                    calorieMap.put(dateStr, calories);
+
+                    tmp.add(java.util.Calendar.DAY_OF_YEAR, 1);
                 }
 
-                String payloadStep = "API_Result:{StepData_API}\n" + daysArr.toString();
-                java.util.function.Consumer<String> f = feedRef.get();
-                if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadStep));
+                // === 4) 在 UI 线程渲染图表 ===
+                requireActivity().runOnUiThread(() -> {
+                    try {
+                        // 若 ChartHelper 期望“米”，把 distanceKmMap 换成 distanceMapM
+                        addWeeklyExerciseChart(stepsMap, distanceKmMap, calorieMap);
+                    } catch (Throwable t) {
+                        android.util.Log.e(TAG, "addWeeklyExerciseChart failed", t);
+                        addChatMessage("图表渲染失败：" + t.getMessage(), false);
+                    }
+                });
 
-            } catch (Exception e) {
+                // === 5) 回喂 GPT 生成分析（通过你已有的 feedRef） ===
+                try {
+                    org.json.JSONArray days = new org.json.JSONArray();
+                    for (String d : stepsMap.keySet()) {
+                        org.json.JSONObject one = new org.json.JSONObject()
+                                .put("date", d)
+                                .put("steps", stepsMap.get(d))
+                                .put("distance_km", round2(distanceKmMap.get(d)))
+                                .put("calorie_kcal", round1(calorieMap.get(d)));
+                        days.put(one);
+                    }
+                    org.json.JSONObject report = new org.json.JSONObject()
+                            .put("period_start", sdf.format(startDate))
+                            .put("period_end",   sdf.format(today))
+                            .put("weight_kg",    round1(weight))
+                            .put("days",         days);
+
+                    // 避免被“裸 JSON 行”清理规则剔除，加前缀
+                    String payload = "StepData_Report " + report.toString()
+                            + "\n请基于这些数据给出简短中文分析与鼓励（≤100字，避免使用任何 {Map_API_*} 令牌或代码块）。";
+
+                    java.util.function.Consumer<String> feeder = (feedRef != null) ? feedRef.get() : null;
+                    if (feeder != null) feeder.accept(payload);
+
+                } catch (Exception e) {
+                    android.util.Log.e(TAG, "feedRef accept failed", e);
+                }
+
+            } catch (Throwable t) {
+                android.util.Log.e(TAG, "handleStepRequest failed", t);
                 requireActivity().runOnUiThread(() ->
-                        addChatMessage("获取步数失败：" + e.getMessage(), false));
+                        addChatMessage("获取运动周报失败：" + t.getMessage(), false));
             }
         }).start();
     }
+
+    private static float round1(float v) { return Math.round(v * 10f) / 10f; }
+    private static float round2(float v) { return Math.round(v * 100f) / 100f; }
+
 
 
     private void handleDrawRequest(String dialogForRoute,
@@ -1632,6 +1845,123 @@ public class ChatbotFragment extends Fragment {
         return sb.toString();
     }
 
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // 1) 注册：多权限
+        requestPermsLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestMultiplePermissions(),
+                result -> {
+                    boolean fine  = Boolean.TRUE.equals(result.get(Manifest.permission.ACCESS_FINE_LOCATION));
+                    boolean coarse= Boolean.TRUE.equals(result.get(Manifest.permission.ACCESS_COARSE_LOCATION));
+                    boolean locOK = fine || coarse;
+
+                    boolean actOK = (Build.VERSION.SDK_INT < 29)
+                            || Boolean.TRUE.equals(result.get(Manifest.permission.ACTIVITY_RECOGNITION));
+
+                    if (locOK && actOK) {
+                        // 2) 如需后台定位，单独再申请（注意用另一个 launcher）
+                        if (Build.VERSION.SDK_INT >= 29 &&
+                                ContextCompat.checkSelfPermission(requireContext(),
+                                        Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                                        != PackageManager.PERMISSION_GRANTED) {
+                            // 先做一段说明 UI 更友好，然后：
+                            requestBgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+                            return;
+                        }
+                        startSafeLocationStuff(); // 权限齐活，开始你的业务
+                    } else {
+                        // 这里按需处理“不再询问”等分支
+
+                    }
+                }
+        );
+
+        // 2) 注册：单权限（后台定位）
+        requestBgLocLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(),
+                granted -> {
+                    if (granted) {
+                        startSafeLocationStuff();
+                    } else {
+                        showExplainWhyDialog();
+
+                    }
+                }
+        );
+    }
+    private void ensurePermissions() {
+        List<String> need = new ArrayList<>();
+
+        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED
+                && ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= 29 &&
+                ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACTIVITY_RECOGNITION)
+                        != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        if (!need.isEmpty()) {
+            requestPermsLauncher.launch(need.toArray(new String[0]));
+        } else {
+            // 前台权限已就绪
+            if (Build.VERSION.SDK_INT >= 29 &&
+                    ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                            != PackageManager.PERMISSION_GRANTED) {
+                // 仅当缺“后台定位”时再单独申请
+                requestBgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+            } else {
+                // 所有需要的权限都齐了 → 不再弹窗，直接开始你的业务 & 隐藏权限提示 UI（如有）
+                // hidePermissionBanner(); // 如果你有这样的 UI
+                startSafeLocationStuff();
+            }
+        }
+
+    }
+
+    private long lastLocInjectedAt = 0L;
+
+    // 统一构造一条“位置上下文”的 assistant 工具消息并写入会话历史
+    private void injectUserLocationContext(@androidx.annotation.Nullable com.amap.api.maps.model.LatLng loc, String tag) {
+        long ts = System.currentTimeMillis();
+        String payload;
+        if (loc == null) {
+            payload = "[APP_CONTEXT] " + tag + " USER_LOCATION: unknown; ts=" + ts;
+        } else {
+            payload = "[APP_CONTEXT] " + tag
+                    + " USER_LOCATION lat=" + loc.latitude
+                    + ", lng=" + loc.longitude
+                    + "; ts=" + ts;
+        }
+        try {
+            org.json.JSONObject toolMsg = new org.json.JSONObject()
+                    .put("role", "assistant")
+                    .put("content", payload);
+            if (conversationHistory != null) conversationHistory.put(toolMsg);
+            if (localConversationHistory != null) localConversationHistory.put(new org.json.JSONObject(toolMsg.toString()));
+        } catch (Exception ignore) {}
+    }
+
+    // （可选）去重：仅当位置变化显著或超过冷却时间才再次注入
+    private boolean shouldInjectAgain(@androidx.annotation.Nullable com.amap.api.maps.model.LatLng last,
+                                      @androidx.annotation.Nullable com.amap.api.maps.model.LatLng now,
+                                      long lastTs, long cooldownMs, float minDeltaMeters) {
+        if (now == null) return (System.currentTimeMillis() - lastTs) > cooldownMs;
+        if (last == null) return true;
+        float[] out = new float[1];
+        android.location.Location.distanceBetween(last.latitude, last.longitude, now.latitude, now.longitude, out);
+        return out[0] >= minDeltaMeters || (System.currentTimeMillis() - lastTs) > cooldownMs;
+    }
 
 
 

@@ -104,6 +104,8 @@ public class WalkFragment extends Fragment {
     @Nullable private SmartGuide smartGuide = null;
 
 
+    private boolean halfwayEncouraged = false;           // 是否已在“过半”时鼓励过
+    private double plannedRouteDistanceMeters = 0d;      //
 
     private double totalDistance = 0f;
 
@@ -142,6 +144,10 @@ public class WalkFragment extends Fragment {
         AMapLocationClient.updatePrivacyShow(requireContext(), true, true);
         AMapLocationClient.updatePrivacyAgree(requireContext(), true);
 
+        if (routeArg != null && !routeArg.isEmpty()) {
+            plannedRouteDistanceMeters = computeRouteDistanceMeters(routeArg);
+            halfwayEncouraged = false;
+        }
         // 获取地图容器
         mapContainer = view.findViewById(R.id.map_container);
         Log.d(TAG, "onCreateView, mapContainer=" + mapContainer);
@@ -200,6 +206,7 @@ public class WalkFragment extends Fragment {
             sgLastLatLng = new LatLng(location.getLatitude(), location.getLongitude());
             sgLastBearing = location.hasBearing() ? location.getBearing() : Float.NaN;
             // 这里不要做重活（如网络请求），只做缓存即可
+            checkHalfwayAndNotify();
         });
     }
 
@@ -611,7 +618,7 @@ public class WalkFragment extends Fragment {
 
     private SmartGuide.ActionSink sgSink;
     private com.amap.api.maps.model.LatLng lastFix = null;
-    private static final long SG_TICK_MS = 4000L;
+    private static final long SG_TICK_MS = 40000L;
 
     private final Runnable sgTickRunnable = new Runnable() {
         @Override public void run() {
@@ -786,7 +793,7 @@ public class WalkFragment extends Fragment {
 
             // 5) 展示 InfoWindow & 轻推相机
             try { mk.showInfoWindow(); } catch (Exception ignore) {}
-            try { aMap.animateCamera(CameraUpdateFactory.newLatLngZoom(pos, 17f), 300, null); } catch (Exception ignore) {}
+           
         });
     }
 
@@ -807,6 +814,34 @@ public class WalkFragment extends Fragment {
             mk.setPosition(pos);
         }
         return mk;
+    }
+
+
+    private void checkHalfwayAndNotify() {
+        if (plannedRouteDistanceMeters <= 0) return;
+        if (halfwayEncouraged) return;
+        if (totalDistance >= plannedRouteDistanceMeters * 0.5) {
+            halfwayEncouraged = true;
+
+            String payload = buildHalfwayPayload(
+                    totalDistance,
+                    plannedRouteDistanceMeters,
+                    sgLastLatLng /* 你已有的最后位置对象 */
+            );
+
+            android.os.Bundle b = new android.os.Bundle();
+            b.putString("payload", payload);
+            getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);
+        }
+    }
+
+    // 事件负载（工具风格）：既让模型知道“状态”，也加上“只输出鼓励、禁止令牌”的限制
+    private String buildHalfwayPayload(double walked, double total, Object lastLatLng) {
+        long w = Math.round(walked), t = Math.round(total);
+        return "[APP_EVENT] HALF_WAY_REACHED\n"
+                + "walked_m=" + w + ", total_m=" + t
+                + (lastLatLng != null ? (", last=" + String.valueOf(lastLatLng)) : "")
+                + "\nThe user is already halfway there, so you might want to give them some encouragement。";
     }
 
 
@@ -856,8 +891,8 @@ public class WalkFragment extends Fragment {
     // 示例方法：计算配速（分钟/公里）
     private double calculatePace() {
         double durationMinutes = calculateDuration() / 60.0;
-        double distanceKm = totalDistance;
-        return distanceKm > 0 ? durationMinutes / distanceKm : 0.0;
+        double distance = totalDistance;
+        return distance > 0 ? durationMinutes / distance : 0.0;
     }
 
     // 计算跑步持续时间（秒）
@@ -1008,6 +1043,27 @@ public class WalkFragment extends Fragment {
             Log.e(TAG, "createMapIfNeeded@" + caller + " failed", t);
         }
     }
+    // 计算一条路线的总长度（米）
+    private static double computeRouteDistanceMeters(java.util.List<com.example.walkpromote22.data.model.Location> pts) {
+        if (pts == null || pts.size() < 2) return 0d;
+        double sum = 0d;
+        for (int i = 1; i < pts.size(); i++) {
+            double lat1 = pts.get(i - 1).getLatitude();
+            double lon1 = pts.get(i - 1).getLongitude();
+            double lat2 = pts.get(i).getLatitude();
+            double lon2 = pts.get(i).getLongitude();
+            sum += distMeters(lat1, lon1, lat2, lon2);
+        }
+        return sum;
+    }
+
+    // 两点间球面距离（米）——用系统封装，避免哈弗辛误差实现
+    private static double distMeters(double lat1, double lon1, double lat2, double lon2) {
+        float[] res = new float[1];
+        android.location.Location.distanceBetween(lat1, lon1, lat2, lon2, res);
+        return res[0];
+    }
+
 
 
 }

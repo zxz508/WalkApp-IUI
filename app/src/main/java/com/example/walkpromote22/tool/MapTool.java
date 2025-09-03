@@ -399,6 +399,7 @@ public class MapTool extends LinearLayout {
 
 
 
+
     public double getTotalDistance(){
         return totalDistance;
     }

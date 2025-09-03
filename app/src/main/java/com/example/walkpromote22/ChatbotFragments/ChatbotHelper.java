@@ -142,6 +142,34 @@ public class ChatbotHelper {
 
 
 
+    // 让外部直接拿到 String 回复，无需自己解析 JSON
+    public void sendChatMessages(String model, JSONArray messages, int maxTokens, double temperature,
+                         ChatbotResponseListener listener) {
+        sendChatMessages(model, messages, maxTokens, temperature, new okhttp3.Callback() {
+            @Override public void onFailure(okhttp3.Call call, java.io.IOException e) {
+                listener.onFailure("Failed to connect to Chatbot: " + e.getMessage());
+            }
+            @Override public void onResponse(okhttp3.Call call, okhttp3.Response response) throws java.io.IOException {
+                String body = response.body() != null ? response.body().string() : null;
+                if (!response.isSuccessful() || body == null) {
+                    listener.onFailure("HTTP " + response.code() + ": " + (body == null ? "empty body" : body));
+                    return;
+                }
+                try {
+                    org.json.JSONObject jo = new org.json.JSONObject(body);
+                    String content = jo.getJSONArray("choices")
+                            .getJSONObject(0)
+                            .getJSONObject("message")
+                            .getString("content")
+                            .trim();
+                    listener.onResponse(content);
+                } catch (Exception ex) {
+                    listener.onFailure("Parse error: " + ex.getMessage());
+                }
+            }
+        });
+    }
+
     public void sendChatMessages(String model, JSONArray messages, int maxTokens, double temperature, Callback callback) {
         JSONObject requestJson = new JSONObject();
         try {

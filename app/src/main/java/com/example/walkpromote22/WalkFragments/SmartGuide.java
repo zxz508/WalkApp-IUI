@@ -132,12 +132,14 @@ public class SmartGuide {
                             "Supported tokens (do NOT wrap them in code blocks):\n" +
                             "{Add_Marker:lat,lng}\n" +
                             "{Add_Text:message,lat,lng}\n+" +
-                            "I will send you the history of the user (with the agent's reply removed, " +
+                            "I will send you the history of the user(with the agent's reply removed, " +
                             "telling you all the user's needs and the route the user eventually took)." +
                             " Every once in a while I will send you the current location of the user and all apis within 500m of them." +
                             " If it contains a POI that the user has mentioned or that the user may be interested in, " +
                             "you can use {Add_Marker:lat,lng} to mark the point." +
-                            "You can also use {Add_Text:message,lat,lng} to write a short note around the point to let the user know that it is not far away.";
+                            "You can also use {Add_Text:message,lat,lng} to write a short note around the point to let the user know that it is not far away."+
+                            "You should not respond any location that is further than 500m,don't add marker or text in user's current location," +
+                            "you can just send {} if you think there is nothing user would be interested in in all POIs that sent to you.";
 
             final org.json.JSONArray hist = new org.json.JSONArray()
                     .put(new org.json.JSONObject().put("role", "system").put("content", sys))
