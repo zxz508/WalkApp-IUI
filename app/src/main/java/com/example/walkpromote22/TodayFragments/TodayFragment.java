@@ -8,6 +8,7 @@ package com.example.walkpromote22.TodayFragments;
 import static android.content.Context.MODE_PRIVATE;
 
 
+import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchPOIs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 
 import android.animation.ObjectAnimator;
@@ -217,12 +218,18 @@ public class TodayFragment extends Fragment {
         try {
             getCurrentLocation(true,requireContext(), new ChatbotFragment.LocationCallback() {
                 @Override
-                public void onLocationReceived(LatLng location) {
+                public void onLocationReceived(LatLng location) throws Exception {
                     SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
                     prefs.edit().putString("location_lat", String.valueOf(location.latitude)).apply();
                     prefs.edit().putString("location_long", String.valueOf(location.longitude)).apply();
                     userLocation[0] = location;
                     Log.e("App Startup", "定位成功：" + location.latitude + ", " + location.longitude);
+
+
+                    Log.e(TAG,"提前尝试抓取POI");
+
+                    fetchPOIs(requireContext(),userLocation[0], 5000);
+
 
                     // 请求天气
                     WeatherTool.getCityCodeFromLatLng(requireContext(), userLocation[0], new WeatherTool.CityCodeCallback() {
@@ -260,6 +267,7 @@ public class TodayFragment extends Fragment {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+
 
 
         return rootView;

@@ -1,11 +1,13 @@
 package com.example.walkpromote22.ChatbotFragments;
 
 
+import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchTrafficEventsOnce;
 import static com.example.walkpromote22.Manager.RouteSyncManager.createRoute;
 import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitialized;
 
 import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
 import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
+import static com.example.walkpromote22.RouteGeneration.multiAgent.RouteOutput.generateRoute;
 import static com.example.walkpromote22.WalkFragments.SmartGuide.buildUserInputs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 import static com.example.walkpromote22.tool.MapTool.rank;
@@ -273,7 +275,11 @@ public class ChatbotFragment extends Fragment {
                 (requestKey, result) -> {
                     String payload = result.getString("payload", "");
                     if (payload != null && !payload.isEmpty()) {
-                        injectAppToolPayload(payload);
+                        try {
+                            injectAppToolPayload(payload);
+                        } catch (JSONException e) {
+                            throw new RuntimeException(e);
+                        }
                     }
                 }
         );
@@ -309,7 +315,7 @@ public class ChatbotFragment extends Fragment {
 
     // 初始化 ChatbotHelper（请根据实际情况完善获取                addChatMessage(message, true); API key 的逻辑）
         String apiKey = getApiKeyFromSecureStorage();
-        chatbotHelper = new ChatbotHelper(apiKey);
+        chatbotHelper = new ChatbotHelper();
         sendButton.setOnClickListener(v -> {
             String userMessage = userInput.getText().toString().trim();
             if (!userMessage.isEmpty()) {
@@ -326,7 +332,7 @@ public class ChatbotFragment extends Fragment {
                             "You should begin with questions like: To create the best route, I need a bit of info:" + "How long do you want to walk (time or distance)?" + "Do you prefer quiet streets, scenic spots, or lively areas?"+
                             "Following are very important:*****" +
                             "When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON (respond {Map_API_Certain} before if user has a clear destination)" +
-                            "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain}"+
+                            "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain} and API will give you correspond POIs name and locations FROM NEAR TO FAR"+
                             "When you want to show user the route drawing in map, you should ask user to wait a second and respond with: {Drawing_API} and API will draw the route. " +
                             "When you want to get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
                             "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
@@ -334,6 +340,7 @@ public class ChatbotFragment extends Fragment {
                             "The time now is"+formatted+", and the weather now is"+weather+",the user is at"+userLocation+
                             "You can only use token twice in a row without the user requesting it"+
                             "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
+                            "Don't keep saying Great by the way"+
                             "Here's a sample conversation1 I'd like you to have with your users(Only for sample,you should have different talk in different weather,time and so on):" +
                             "Sample Conversation1\n" +
                             "User: Generate a suitable route for me\n" +
@@ -388,7 +395,11 @@ public class ChatbotFragment extends Fragment {
                 }
 
                 // 发送并处理工具触发
-                sendWithPromoteAndTooling(userMessage);
+                try {
+                    sendWithPromoteAndTooling(userMessage);
+                } catch (JSONException e) {
+                    throw new RuntimeException(e);
+                }
             }
         });
     }
@@ -416,18 +427,7 @@ public class ChatbotFragment extends Fragment {
         }
     }
 
-    private void showGoToSettingsDialog() {
-        new AlertDialog.Builder(requireContext())
-                .setTitle("需要权限")
-                .setMessage("请在设置中开启定位/活动识别权限，以正常使用路线与步数功能。")
-                .setPositiveButton("去设置", (d, w) -> {
-                    Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    i.setData(Uri.fromParts("package", requireContext().getPackageName(), null));
-                    startActivity(i);
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
+
 
     private void showExplainWhyDialog() {
         new AlertDialog.Builder(requireContext())
@@ -484,7 +484,7 @@ public class ChatbotFragment extends Fragment {
 // - Drawing_API → 仅对“路线”进行绘制（需要 lastRouteRef 或先生成路线）。
     // 替换你现有的方法
     // 完全契合 {Map_API_Route}/{Map_API_Certain}/{Drawing_API}/{StepData_API} 的版本
-    private void sendWithPromoteAndTooling(String userMessage) {
+    private void sendWithPromoteAndTooling(String userMessage) throws JSONException {
         final String lastUserMsg = userMessage; // 本轮用户输入
 
         // —— 聚合“历史所有对话（含 user & assistant） + 本轮用户输入”供 generateRoute 使用 ——
@@ -601,27 +601,36 @@ public class ChatbotFragment extends Fragment {
                 String promote = "The method called by your token has been implemented, but you can no longer call the token continuously. Please ask if you want to invoke tokens later"
                         + (toolPayload == null ? "" : toolPayload);
 
-                chatbotHelper.sendMessage(promote, historyToSend, new ChatbotResponseListener() {
-                    @Override public void onResponse(String reply2) {
-                        java.util.function.Consumer<String> h = handleRef.get();
-                        if (h != null) h.accept(reply2);
+                try {
+                    chatbotHelper.sendMessage(promote, historyToSend, new ChatbotResponseListener() {
+                        @Override public void onResponse(String reply2) {
+                            Consumer<String> h = handleRef.get();
+                            if (h != null) h.accept(reply2);
 
-                    }
-                    @Override public void onFailure(String error) {
-                    }
-                });
+                        }
+                        @Override public void onFailure(String error) {
+                        }
+                    });
+                } catch (JSONException e) {
+                    throw new RuntimeException(e);
+                }
             } else {
-                chatbotHelper.sendMessage(toolPayload == null ? "" : toolPayload, historyToSend, new ChatbotResponseListener() {
-                    @Override public void onResponse(String reply2) {
-                        Log.e(TAG,"repley1231="+reply2);
-                        java.util.function.Consumer<String> h = handleRef.get();
-                        if (h != null) h.accept(reply2);
-                    }
-                    @Override public void onFailure(String error) {
-                        requireActivity().runOnUiThread(() ->
-                                addChatMessage("Failed to connect to Chatbot: " + error, false));
-                    }
-                });
+                try {
+                    Log.e("TAG","喂给聊天Aent的内容是:"+toolPayload);
+                    chatbotHelper.sendMessage(toolPayload == null ? "" : toolPayload, historyToSend, new ChatbotResponseListener() {
+                        @Override public void onResponse(String reply2) {
+                            Log.e(TAG,"repley1231="+reply2);
+                            Consumer<String> h = handleRef.get();
+                            if (h != null) h.accept(reply2);
+                        }
+                        @Override public void onFailure(String error) {
+                            requireActivity().runOnUiThread(() ->
+                                    addChatMessage("Failed to connect to Chatbot: " + error, false));
+                        }
+                    });
+                } catch (JSONException e) {
+                    throw new RuntimeException(e);
+                }
             }
         });
 
@@ -710,7 +719,7 @@ public class ChatbotFragment extends Fragment {
 
             if (needDraw) {
                 handleDrawRequest(dialogForRoute, lastRouteRef, feedRef);
-                return;
+
             }
             // 无任何工具触发：只展示自然语言
         });
@@ -731,7 +740,7 @@ public class ChatbotFragment extends Fragment {
 
 
     // === 1) 工具风格注入：把 APP 事件当作“assistant”角色写入历史，然后把同样文本作为下一轮提示发给 LLM ===
-    public void injectAppToolPayload(String toolPayload) {
+    public void injectAppToolPayload(String toolPayload) throws JSONException {
         try {
             org.json.JSONObject toolMsg = new org.json.JSONObject()
                     .put("role", "assistant")
@@ -801,6 +810,7 @@ public class ChatbotFragment extends Fragment {
                 }
                 String payloadHistory = "API_Result:{User_History}\n" + historyArr.toString();
                 Consumer<String> f = feedRef.get();
+
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadHistory));
 
             } catch (Exception e) {
@@ -847,17 +857,20 @@ public class ChatbotFragment extends Fragment {
                     if (chosen == null) chosen = poiList.optJSONObject(0);
                 }
 
+                JSONArray flagged = fetchTrafficEventsOnce(userLocation, 6000);
+                String avoidHint = buildAvoidHint(flagged);
+
                 // 2.4 生成“路线”
                 List<Location> route;
                 if (chosen != null) {
                     String hint = String.format(Locale.US,
-                            "\n[ROUTE_TARGET] name=%s; lat=%.6f; lng=%.6f",
+                            "\n[ROUTE] name=%s; lat=%.6f; lng=%.6f",
                             chosen.optString("name",""),
                             chosen.optDouble("latitude", 0d),
                             chosen.optDouble("longitude", 0d));
-                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute + hint);
+                    route = generateRoute(requireContext(), dialogForRoute + hint+avoidHint);
                 } else {
-                    route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
+                    route = generateRoute(requireContext(), dialogForRoute+avoidHint);
                 }
 
                 // === 写入全局 generatedRoute（用不可变副本，避免并发写） ===
@@ -870,13 +883,12 @@ public class ChatbotFragment extends Fragment {
 
 
 
-                // 回喂 JSON（保持你原来的行为）
                 JSONArray routeArr = new JSONArray();
                 if (route != null) {
                     for (Location L : route) {
                         JSONObject o = new JSONObject();
                         o.put("name", L.getName());
-                        o.put("latitude", L.getLatitude());
+                        o.put("latitude", L.getLatitude());   // 保持 latitude/longitude 键名
                         o.put("longitude", L.getLongitude());
                         routeArr.put(o);
                     }
@@ -884,6 +896,7 @@ public class ChatbotFragment extends Fragment {
                 String payloadRoute = "API_Result:{Map_API_Route}\n" + routeArr.toString();
                 java.util.function.Consumer<String> f = feedRef.get();
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
+
 
             } catch (Exception e) {
                 requireActivity().runOnUiThread(() ->
@@ -1005,7 +1018,7 @@ public class ChatbotFragment extends Fragment {
         if (r == null || r.isEmpty()) {
             new Thread(() -> {
                 try {
-                    List<Location> route = RouteGeneration.generateRoute(requireContext(), dialogForRoute);
+                    List<Location> route = generateRoute(requireContext(), dialogForRoute);
                     lastRouteRef.set(route);
                     requireActivity().runOnUiThread(() -> {
                         try { addBotRouteMessage(Collections.singletonList(route)); } catch (Exception e) { throw new RuntimeException(e); }
@@ -1043,7 +1056,7 @@ public class ChatbotFragment extends Fragment {
 
                 lastCertainListRef.set(poiArray);
 
-                String payloadCertain = "API_Result:{Map_API_Certain}\n" + poiArray.toString();
+                String payloadCertain = "API_Result:{Map_API_Certain}，从近到远排序\n" + poiArray.toString();
                 java.util.function.Consumer<String> f = feedRef.get();
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadCertain));
 
@@ -1117,6 +1130,36 @@ public class ChatbotFragment extends Fragment {
 
 
 
+
+
+    private static String buildAvoidHint(JSONArray flagged) {
+        if (flagged == null || flagged.length() == 0) return "";
+
+        StringBuilder sb = new StringBuilder("\n[AVOID_COORDS] ");
+        java.util.Set<String> dedup = new java.util.HashSet<>();
+        int kept = 0;
+
+        for (int i = 0; i < flagged.length(); i++) {
+            JSONObject ev = flagged.optJSONObject(i);
+            if (ev == null) continue;
+
+            String type = ev.optString("type", "event");
+            double lat = ev.optDouble("lat", Double.NaN);
+            double lng = ev.optDouble("lng", Double.NaN);
+            if (Double.isNaN(lat) || Double.isNaN(lng)) continue;
+
+            // ~11m 级别去重
+            String key = Math.round(lat * 1e4) + "," + Math.round(lng * 1e4);
+            if (!dedup.add(key)) continue;
+
+            if (kept > 0) sb.append("; ");
+            sb.append(String.format(java.util.Locale.US, "%s@%.6f,%.6f", type, lat, lng));
+
+            kept++;
+            if (kept >= 12) break; // 防止 hint 过长
+        }
+        return kept > 0 ? sb.toString() : "";
+    }
 
 
 
@@ -1407,7 +1450,11 @@ public class ChatbotFragment extends Fragment {
 
             // —— 你现有的 LLM 发送逻辑（保留），例如：
             // conversationHistory = ensureSystemPromote(conversationHistory, promote);
-            sendWithPromoteAndTooling(userMessage);
+            try {
+                sendWithPromoteAndTooling(userMessage);
+            } catch (JSONException e) {
+                throw new RuntimeException(e);
+            }
         });
     }
 

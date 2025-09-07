@@ -58,10 +58,8 @@
 
         <meta-data
             android:name="com.amap.api.v2.apikey"
-            android:value="ff400ed61988bc1490c08f3544e36ebf"/>
-        <meta-data
-            android:name="com.huawei.hms.client.appid"
-            android:value="appid=YOUR_HUAWEI_APP_ID"/>
+            android:value="d1fc30a2c3678840201538e3a1cfd0dd"/>
+
 
         <!-- 添加高德定位相关服务（必须放在 <application> 内） -->
 

@@ -244,8 +244,6 @@ public class RouteSyncManager {
                                         locationDao.insert(entity); // @Insert(onConflict = REPLACE/IGNORE)
                                     }
                                 });
-                                Log.i(TAG, "💾 Locations saved locally: routeId=" + routeId
-                                        + ", count=" + locations.size());
                             } catch (Exception e) {
                                 Log.e(TAG, "Save locations locally failed: routeId=" + routeId, e);
                             }

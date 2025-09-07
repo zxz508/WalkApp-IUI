@@ -68,7 +68,7 @@ import java.util.regex.Pattern;
  * 2. 根据目标点规划推荐路线（导航规划），调用路线规划 API 得到沿路拐点后绘制
  */
 public class MapTool extends LinearLayout {
-    private static final String API_KEY = "9bc4bb77bf4088e3664bff35350f9c37";
+    private static final String API_KEY = "03f8248595264720386231fad6739bb8";
 
     private MapView mapView;
     // 在 MapContainerView 类中添加成员变量：

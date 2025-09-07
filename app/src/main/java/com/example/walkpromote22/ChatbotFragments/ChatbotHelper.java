@@ -9,6 +9,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -32,11 +33,10 @@ public class ChatbotHelper {
     private static final String TAG = "ChatbotHelper";
     // 基础 URL，后续需拼接具体接口路径
     private static final String OPENAI_API_URL = "https://xiaoai.plus/v1";
-    private String apiKey;
+    private final String apiKey="sk-O62I7CQRETZ1dSFevmJWqdsJtsfWmg91sbBdWY8tJDRbgYTm";;
     private OkHttpClient client;
 
-    public ChatbotHelper(String apiKey) {
-        this.apiKey = apiKey;
+    public ChatbotHelper() {
         HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor();
         loggingInterceptor.setLevel(HttpLoggingInterceptor.Level.BODY);
 
@@ -62,7 +62,7 @@ public class ChatbotHelper {
      * @param conversationHistory 对话历史（JSONArray），由调用方维护
      * @param listener 回调接口，返回 GPT 回复或错误信息
      */
-    public void sendMessage(String userMessage, JSONArray conversationHistory, ChatbotResponseListener listener) {
+    public void sendMessage(String userMessage, JSONArray conversationHistory, ChatbotResponseListener listener) throws JSONException {
 
         // 将用户消息添加到对话历史
         try {
@@ -74,20 +74,21 @@ public class ChatbotHelper {
             return;
         }
 
-        // 如果对话历史过长，则进行截断（简单方式：保留第一条系统消息及最近 MAX_HISTORY_MESSAGES - 1 条记录）
-        if (conversationHistory.length() > MAX_HISTORY_MESSAGES) {
-            conversationHistory = truncateConversationHistory(conversationHistory);
-        }
 
         // 传递整个对话历史给 GPT
         JSONArray finalConversationHistory = conversationHistory;
-        sendChatMessages("gpt-5-chat-latest", conversationHistory, 500, 0.7, new okhttp3.Callback() {
+        sendChatMessages("gpt-4o-2024-08-06", conversationHistory, 500, 0.1, new okhttp3.Callback() {
             @Override
             public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
-                listener.onFailure("Failed to connect to Chatbot: " + e.getMessage());
+                try {
+                    listener.onFailure("Failed to connect to Chatbot: " + e.getMessage());
+                } catch (JSONException ex) {
+                    throw new RuntimeException(ex);
+                }
             }
             @Override
             public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) throws IOException {
+                Log.e("TAG","发送给GPT的消息长度为:"+conversationHistory.toString().length());
                 String responseData = response.body() != null ? response.body().string() : null;
                 if (response.isSuccessful() && responseData != null) {
                     try {
@@ -97,78 +98,31 @@ public class ChatbotHelper {
                                 .getJSONObject("message")
                                 .getString("content").trim();
                         // 将 GPT 回复添加到对话历史
-                        try {
-                            finalConversationHistory.put(new JSONObject()
-                                    .put("role", "assistant")
-                                    .put("content", chatbotReply));
-                        } catch (Exception e) {
-                            // 可记录日志，但不影响回调
-                        }
+
                         listener.onResponse(chatbotReply);
                     } catch (Exception e) {
-                        listener.onFailure("Failed to get response from Chatbot.");
+                        try {
+                            listener.onFailure("Failed to get response from Chatbot.");
+                        } catch (JSONException ex) {
+                            throw new RuntimeException(ex);
+                        }
                     }
                 } else {
-                    listener.onFailure("Failed to get response from Chatbot.");
+                    try {
+                        listener.onFailure("Failed to get response from Chatbot.");
+                    } catch (JSONException e) {
+                        throw new RuntimeException(e);
+                    }
                 }
             }
         });
     }
 
-    /**
-     * 简单截断对话历史，仅保留第一条（系统提示）和最近的记录。
-     * @param history 原始对话历史
-     * @return 截断后的对话历史 JSONArray
-     */
-    private JSONArray truncateConversationHistory(JSONArray history) {
-        JSONArray newHistory = new JSONArray();
-        // 保留第一条系统提示
-        try {
-            newHistory.put(history.getJSONObject(0));
-        } catch (Exception e) {
-            // 出现异常时直接返回原 history
-            return history;
-        }
-        int start = Math.max(1, history.length() - MAX_HISTORY_MESSAGES + 1);
-        for (int i = start; i < history.length(); i++) {
-            try {
-                newHistory.put(history.getJSONObject(i));
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-        return newHistory;
-    }
 
 
 
-    // 让外部直接拿到 String 回复，无需自己解析 JSON
-    public void sendChatMessages(String model, JSONArray messages, int maxTokens, double temperature,
-                         ChatbotResponseListener listener) {
-        sendChatMessages(model, messages, maxTokens, temperature, new okhttp3.Callback() {
-            @Override public void onFailure(okhttp3.Call call, java.io.IOException e) {
-                listener.onFailure("Failed to connect to Chatbot: " + e.getMessage());
-            }
-            @Override public void onResponse(okhttp3.Call call, okhttp3.Response response) throws java.io.IOException {
-                String body = response.body() != null ? response.body().string() : null;
-                if (!response.isSuccessful() || body == null) {
-                    listener.onFailure("HTTP " + response.code() + ": " + (body == null ? "empty body" : body));
-                    return;
-                }
-                try {
-                    org.json.JSONObject jo = new org.json.JSONObject(body);
-                    String content = jo.getJSONArray("choices")
-                            .getJSONObject(0)
-                            .getJSONObject("message")
-                            .getString("content")
-                            .trim();
-                    listener.onResponse(content);
-                } catch (Exception ex) {
-                    listener.onFailure("Parse error: " + ex.getMessage());
-                }
-            }
-        });
-    }
+
+
 
     public void sendChatMessages(String model, JSONArray messages, int maxTokens, double temperature, Callback callback) {
         JSONObject requestJson = new JSONObject();
@@ -387,7 +341,11 @@ public class ChatbotHelper {
                     @Override
                     public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
                         // 通过回调通知 UI 层失败信息
-                        listener.onFailure("Failed to connect to Chatbot (Photo): " + e.getMessage());
+                        try {
+                            listener.onFailure("Failed to connect to Chatbot (Photo): " + e.getMessage());
+                        } catch (JSONException ex) {
+                            throw new RuntimeException(ex);
+                        }
                     }
                     @Override
                     public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) throws IOException {
@@ -402,15 +360,27 @@ public class ChatbotHelper {
                                 // 通过回调返回 GPT 回复
                                 listener.onResponse(chatbotReply.trim());
                             } catch (Exception e) {
-                                listener.onFailure("Error processing response.");
+                                try {
+                                    listener.onFailure("Error processing response.");
+                                } catch (JSONException ex) {
+                                    throw new RuntimeException(ex);
+                                }
                             }
                         } else {
-                            listener.onFailure("Failed to get response from Chatbot (Photo).");
+                            try {
+                                listener.onFailure("Failed to get response from Chatbot (Photo).");
+                            } catch (JSONException e) {
+                                throw new RuntimeException(e);
+                            }
                         }
                     }
                 });
             } catch (Exception e) {
-                listener.onFailure("Error fetching or encoding image: " + e.getMessage());
+                try {
+                    listener.onFailure("Error fetching or encoding image: " + e.getMessage());
+                } catch (JSONException ex) {
+                    throw new RuntimeException(ex);
+                }
             }
         }).start();
     }

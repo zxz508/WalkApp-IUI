@@ -2,6 +2,7 @@ package com.example.walkpromote22.WalkFragments;
 
 import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchPOIs;
 
+import android.content.Context;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -12,6 +13,7 @@ import com.example.walkpromote22.ChatbotFragments.ChatbotResponseListener;
 import com.example.walkpromote22.data.model.Location;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -45,7 +47,7 @@ public class SmartGuide {
     private JSONArray userInputs;   // 只存 role=user 的消息（JSONArray）
     private List<Location> routeList;
 
-    private static final String OPENAI_KEY = "sk-O62I7CQRETZ1dSFevmJWqdsJtsfWmg91sbBdWY8tJDRbgYTm";
+
     // 统一 {Token:Payload} 匹配 + 无参 Clear
     private static final Pattern P_TOKEN = Pattern.compile("\\{\\s*([A-Za-z_]+)\\s*:(.*?)\\}", Pattern.CASE_INSENSITIVE);
     private static final Pattern P_TOKEN_BARE_CLEAR = Pattern.compile("\\{\\s*Clear_Markers\\s*\\}", Pattern.CASE_INSENSITIVE);
@@ -85,16 +87,11 @@ public class SmartGuide {
     }
 
     public void updateUserInputs(JSONArray inputs) { this.userInputs = (inputs == null ? new JSONArray() : inputs); }
-    public void updatePoiList(LatLng center) {
+    public void updatePoiList(Context ctx, LatLng center) {
         try {
             Log.e(TAG,"进入updatePoiList");
             // 取 500m 左右半径，tileSize 和 perTileMax 看你需求设
-            JSONArray arr = fetchPOIs(center,
-                    500,      // halfSideMeters
-                    250,      // tileSizeMeters
-                    100,       // perTileMax
-                    300        // globalMax
-            );
+            JSONArray arr = fetchPOIs(ctx,center, 500);
             Log.e(TAG, "fetchPOIs result=" + (arr == null ? "null" : arr.toString()));
 
             this.POIList=arr;
@@ -152,7 +149,7 @@ public class SmartGuide {
             final java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> handleRef = new java.util.concurrent.atomic.AtomicReference<>();
             final java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef   = new java.util.concurrent.atomic.AtomicReference<>();
 
-            final ChatbotHelper helper = new ChatbotHelper(OPENAI_KEY);
+            final ChatbotHelper helper = new ChatbotHelper();
             Log.e("TAG","进入2222");
             // ——把“工具回执”回喂给 LLM（受 hop 限制）——
             feedRef.set((String toolPayload) -> {
@@ -166,17 +163,21 @@ public class SmartGuide {
 
                  {
                      Log.e("TAG","发送给动态地图助手的消息是:"+toolPayload);
-                    helper.sendMessage(toolPayload == null ? "" : toolPayload, hist, new com.example.walkpromote22.ChatbotFragments.ChatbotResponseListener() {
-                        @Override public void onResponse(String reply2) {
-                            Log.e("TAG","动态地图助手的回复是："+reply2);
-                            java.util.function.Consumer<String> h = handleRef.get();
-                            if (h != null) h.accept(reply2);
-                        }
-                        @Override public void onFailure(String error) {
-                            sink.onAddChatMessage("Failed to connect to Chatbot: " + error);
-                        }
-                    });
-                }
+                     try {
+                         helper.sendMessage(toolPayload == null ? "" : toolPayload, hist, new ChatbotResponseListener() {
+                             @Override public void onResponse(String reply2) {
+                                 Log.e("TAG","动态地图助手的回复是："+reply2);
+                                 java.util.function.Consumer<String> h = handleRef.get();
+                                 if (h != null) h.accept(reply2);
+                             }
+                             @Override public void onFailure(String error) {
+                                 sink.onAddChatMessage("Failed to connect to Chatbot: " + error);
+                             }
+                         });
+                     } catch (JSONException e) {
+                         throw new RuntimeException(e);
+                     }
+                 }
             });
 
             // ——统一处理 GPT 回复：先显示纯文本，再执行令牌，最后（如有）回喂工具回执——
@@ -288,17 +289,21 @@ public class SmartGuide {
             Log.e(TAG,"hist内容是"+hist);
             // 4) 首次发起：发送 payload，收到即由 handleRef 进入解析 → 显示 → 执行令牌 →（可选）继续回喂
             executorService.execute(() -> {
-                helper.sendMessage(payload.toString(), hist, new ChatbotResponseListener() {
-                    @Override public void onResponse(String reply1) {
-                        Log.e(TAG, "第一次回复是="+reply1);
-                        java.util.function.Consumer<String> h = handleRef.get();
-                        if (h != null) h.accept(reply1);
-                    }
-                    @Override public void onFailure(String error) {
-                        Log.e(TAG, "Chatbot失败: " + error);
-                        sink.onAddChatMessage("Failed: " + error);
-                    }
-                });
+                try {
+                    helper.sendMessage(payload.toString(), hist, new ChatbotResponseListener() {
+                        @Override public void onResponse(String reply1) {
+                            Log.e(TAG, "第一次回复是="+reply1);
+                            java.util.function.Consumer<String> h = handleRef.get();
+                            if (h != null) h.accept(reply1);
+                        }
+                        @Override public void onFailure(String error) {
+                            Log.e(TAG, "Chatbot失败: " + error);
+                            sink.onAddChatMessage("Failed: " + error);
+                        }
+                    });
+                } catch (JSONException e) {
+                    throw new RuntimeException(e);
+                }
             });
 
 

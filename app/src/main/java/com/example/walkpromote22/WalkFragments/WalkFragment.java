@@ -116,6 +116,7 @@ public class WalkFragment extends Fragment {
     private PathDao pathDao;
     private Path currentPath; // 当前跑步记录
     private AppDatabase appDatabase;
+    private Context context;
 
     // 容器：显示数据的 ScrollView 内的 LinearLayout 和地图容器
     private LinearLayout fitnessDataContainer;
@@ -154,6 +155,7 @@ public class WalkFragment extends Fragment {
 
         fitnessDataContainer=view.findViewById(R.id.fitness_data_container);
         Context appCtx = requireContext().getApplicationContext();
+        context=appCtx;
         appDatabase = AppDatabase.getDatabase(appCtx);
         pathDao = appDatabase.pathDao();
         userDao=appDatabase.userDao();
@@ -638,7 +640,7 @@ public class WalkFragment extends Fragment {
                 executorService.execute(() -> {
                     try {
                         // 1) 后台线程：拉 POI（网络+计算）
-                        sg.updatePoiList(loc);
+                        sg.updatePoiList(context,loc);
                     } catch (Throwable t) {
                         Log.e(TAG, "updatePoiList failed (bg)", t);
                     }
@@ -793,7 +795,7 @@ public class WalkFragment extends Fragment {
 
             // 5) 展示 InfoWindow & 轻推相机
             try { mk.showInfoWindow(); } catch (Exception ignore) {}
-           
+
         });
     }
 

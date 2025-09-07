@@ -10,14 +10,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase;
 import android.content.Context;
 
 import com.example.walkpromote22.data.dao.LocationDao;
+import com.example.walkpromote22.data.dao.POIDao;
 import com.example.walkpromote22.data.dao.PathDao;
 import com.example.walkpromote22.data.dao.PathPointDao;
+import com.example.walkpromote22.data.dao.PoiAreaCoverageDao;
 import com.example.walkpromote22.data.dao.RouteDao;
 import com.example.walkpromote22.data.dao.StepDao;
 import com.example.walkpromote22.data.dao.UserDao;
 import com.example.walkpromote22.data.model.Location;
+import com.example.walkpromote22.data.model.POI;
 import com.example.walkpromote22.data.model.Path;
 import com.example.walkpromote22.data.model.PathPoint;
+import com.example.walkpromote22.data.model.PoiAreaCoverage;
 import com.example.walkpromote22.data.model.Step;
 import com.example.walkpromote22.data.model.User;
 import com.example.walkpromote22.data.model.Route;
@@ -31,8 +35,9 @@ import android.database.Cursor;
         Path.class,
         PathPoint.class,
         Location.class,
-        Route.class
-}, version = 23, exportSchema = false)
+        Route.class,
+        POI.class, PoiAreaCoverage.class
+}, version = 26, exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 
     public abstract UserDao userDao();
@@ -41,6 +46,8 @@ public abstract class AppDatabase extends RoomDatabase {
     public abstract PathPointDao pathPointDao();
     public abstract LocationDao locationDao();
     public abstract RouteDao routeDao();
+    public abstract POIDao poiDao();
+    public abstract PoiAreaCoverageDao poiAreaCoverageDao();
 
     public static volatile AppDatabase INSTANCE;
 

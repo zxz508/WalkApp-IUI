@@ -1,5 +1,6 @@
 package com.example.walkpromote22.data.model;
 
+import androidx.annotation.Nullable;
 import androidx.room.Entity;
 import androidx.room.Ignore;
 import androidx.room.PrimaryKey;
@@ -32,6 +33,7 @@ public class Location implements Serializable {
     private double longitude; // 经度
 
     // 新增属性：个人感知安全性和行人基础设施（类型为 boolean）
+
 
     private int features;//第一个数字表示风景评分（1-9），第二个数字表示人流量（1-9），第三个数字表示车流量（1-9），第四个数字表示遮荫（1-9），第五个数字表示路面平整度（1-9）
 
