@@ -1,10 +1,13 @@
 package com.example.walkpromote22.RouteGeneration.multiAgent;
 
+import android.util.Log;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collection;
 
 /**
  * 10×10 网格的轻量容器；每个 cell 含你要求的属性：
@@ -56,8 +59,21 @@ public class Grid {
                     .put("Anchor", anchor)
                     .put("POIs", pois);
         }
-    }
+        public void addPOI(String name, double lat, double lng) {
+            try {
+                JSONObject poi = new JSONObject();
+                poi.put("name", name);
+                poi.put("lat", lat);
+                poi.put("lng", lng);
+                pois.put(poi);  // 将新的 POI 添加到 pois 数组中
+            } catch (JSONException e) {
+                Log.e("POI Debug", "Error adding POI to cell: " + e.getMessage());
+            }
+        }
 
+
+
+    }
 
 
 

@@ -66,6 +66,11 @@ import android.widget.LinearLayout;
 import org.json.JSONArray;
 
 public class WalkFragment extends Fragment {
+    private long startTime;
+    private boolean isWalking = false;
+    private Handler timerHandler = new Handler();
+    private Runnable timerRunnable;
+    private long totalTime = 0; // 单位秒
 
     private final ExecutorService executorService =
             Executors.newSingleThreadExecutor();
@@ -209,6 +214,7 @@ public class WalkFragment extends Fragment {
             sgLastBearing = location.hasBearing() ? location.getBearing() : Float.NaN;
             // 这里不要做重活（如网络请求），只做缓存即可
             checkHalfwayAndNotify();
+            checkFinishAndNotify();
         });
     }
 
@@ -836,15 +842,87 @@ public class WalkFragment extends Fragment {
             getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);
         }
     }
+    // 用于设置终点事件的函数
+    public void checkFinishAndNotify() {
+        if (plannedRouteDistanceMeters <= 0) return;
+        stopRunning();
 
-    // 事件负载（工具风格）：既让模型知道“状态”，也加上“只输出鼓励、禁止令牌”的限制
+        // 检查用户是否接近终点（可以设定一个距离阈值）
+        if (totalDistance >= plannedRouteDistanceMeters * 0.99) {  // 例如：当接近95%的距离时触发
+            if (!isWalking) return; // 如果已经停止，则不再触发
+
+            isWalking = false; // 停止计时器
+            long endTime = System.currentTimeMillis();
+            long duration = (endTime - startTime) / 1000; // 计算总时间，单位秒
+
+            // 将数据传递给父Fragment
+            String payload = buildFinishPayload(totalDistance, duration);
+
+            android.os.Bundle b = new android.os.Bundle();
+            b.putString("payload", payload);
+            getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);
+
+            Toast.makeText(getContext(), "Walk completed!", Toast.LENGTH_SHORT).show();
+        }
+    }
+    // 生成结束事件的 payload 数据
+    private String buildFinishPayload(double walked, long duration) {
+        long w = Math.round(walked), t = Math.round(plannedRouteDistanceMeters);
+        return "[APP_EVENT] WALK_FINISHED\n"
+                + "walked_m=" + w + ", total_m=" + t
+                + "\nTotal time: " + formatTime(duration)
+                + "\nThe user has completed the walk!";
+    }
+
+    // 格式化时间为时:分:秒
+    private String formatTime(long durationSeconds) {
+        long hours = durationSeconds / 3600;
+        long minutes = (durationSeconds % 3600) / 60;
+        long seconds = durationSeconds % 60;
+        return String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, seconds);
+    }
+
+    // 在开始走路时启动计时器
+    private void startWalking() {
+        isWalking = true;
+        startTime = System.currentTimeMillis();
+        totalTime = 0;
+
+        // 每秒更新一次
+        timerRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isWalking) {
+                    totalTime = (System.currentTimeMillis() - startTime) / 1000;  // 计算已步行时间
+                    // 可以在这里更新 UI，显示步行时间等
+                    Log.d("WalkFragment", "Walk time: " + formatTime(totalTime));
+                    timerHandler.postDelayed(this, 1000);  // 每秒调用一次
+                }
+            }
+        };
+
+        timerHandler.post(timerRunnable);  // 启动计时器
+    }
+
+    // 停止计时器（例如：在结束时调用）
+    private void stopWalking() {
+        isWalking = false;
+        timerHandler.removeCallbacks(timerRunnable);  // 停止计时器
+    }
+
+
+
+    // 生成中途事件的 payload 数据
     private String buildHalfwayPayload(double walked, double total, Object lastLatLng) {
         long w = Math.round(walked), t = Math.round(total);
         return "[APP_EVENT] HALF_WAY_REACHED\n"
                 + "walked_m=" + w + ", total_m=" + t
                 + (lastLatLng != null ? (", last=" + String.valueOf(lastLatLng)) : "")
-                + "\nThe user is already halfway there, so you might want to give them some encouragement。";
+                + "\nThe user is already halfway there, so you might want to give them some encouragement.";
     }
+
+
+    // 事件负载（工具风格）：既让模型知道“状态”，也加上“只输出鼓励、禁止令牌”的限制
 
 
 
@@ -905,12 +983,6 @@ public class WalkFragment extends Fragment {
         return 0;
     }
 
-    private String formatTime(long durationSeconds) {
-        long hours = durationSeconds / 3600;
-        long minutes = (durationSeconds % 3600) / 60;
-        long seconds = durationSeconds % 60;
-        return String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, seconds);
-    }
 
     /**
      * 将 Bitmap 保存为 PNG 文件，并返回保存的文件路径

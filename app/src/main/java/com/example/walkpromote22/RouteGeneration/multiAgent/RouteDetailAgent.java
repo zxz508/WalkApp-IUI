@@ -261,9 +261,11 @@ public class RouteDetailAgent implements Agent {
                 "}\n"+
                 "请输出最终路线上要绘制的点序列 waypoints，规则：\n" +
                 "  1) 锚点必须包含，且首个点必须是名称为 \"Begining Point\" 的起点；\n" +
-                "  2) 仅当“有助于平滑/贴合用户需求与 POI 类别、名称”时，才从 POIs 中补点；\n" +
-                "  3) 路线应平滑、经纬度变化有规律；避免穿越 avoidHint 所指范围；\n" +
-                "  4) 输出坐标键一律为 lat/lng（不要使用 latitude/longitude）。\n" +
+                "  2) 应该远离一些危险POI（事故或者封路维修）或者用户不喜欢的POI"+
+                "  3) 仅当“有助/贴合用户需求与 POI 类别、名称”时，才从 POIs 中补点；\n" +
+                "  4) 当用户表面要直接前往某地的时候，只考虑锚点而不能添加额外的POI"+
+                "  5) 路线应平滑、经纬度变化有规律；避免穿越 avoidHint 所指范围；\n" +
+                "  6) 输出坐标键一律为 lat/lng（不要使用 latitude/longitude）。\n" +
                 "\n" +
                 "仅输出严格 JSON（不得有多余文本）：\n" +
                 "{\n" +

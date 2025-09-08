@@ -794,14 +794,6 @@ public class RouteGeneration {
         }
     }
 
-    public static JSONArray fetchPOIsByPolygon(@NonNull Context ctx, @NonNull List<LatLng> queryPoly) {
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            Log.e("POI_ALLF", "fetchPOIsByPolygon on MAIN → offload worker");
-            return runBlockingOnWorker(() -> fetchPOIsByPolygonWorker(ctx.getApplicationContext(), queryPoly));
-        } else {
-            return fetchPOIsByPolygonWorker(ctx.getApplicationContext(), queryPoly);
-        }
-    }
 
     // ====== 主体：加入“对齐键 + 热区 TTL + 模糊覆盖 + 宽容读库” ======
     public static JSONArray fetchPOIsByPolygonWorker(@NonNull Context ctx,

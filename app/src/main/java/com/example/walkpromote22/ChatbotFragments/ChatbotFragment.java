@@ -893,7 +893,7 @@ public class ChatbotFragment extends Fragment {
                         routeArr.put(o);
                     }
                 }
-                String payloadRoute = "API_Result:{Map_API_Route}\n" + routeArr.toString();
+                String payloadRoute = "Route generated from {Map_API_Route}\n" + routeArr.toString();
                 java.util.function.Consumer<String> f = feedRef.get();
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
 

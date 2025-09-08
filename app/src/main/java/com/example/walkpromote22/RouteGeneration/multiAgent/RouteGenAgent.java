@@ -9,6 +9,7 @@ import android.util.Log;
 import com.amap.api.maps.model.LatLng;
 import com.example.walkpromote22.ChatbotFragments.ChatbotHelper;
 import com.example.walkpromote22.ChatbotFragments.ChatbotResponseListener;
+import com.example.walkpromote22.data.model.POI;
 
 
 import org.json.JSONArray;
@@ -85,7 +86,13 @@ public class RouteGenAgent implements Agent {
 
 // ================= 3) 注入 POIs 到 cell（仅为 DETAIL 使用；不传给 GPT） =================
             JSONArray allPois = safeFetchPois(userLoc, /*radiusMeters*/5200); // 覆盖±5km 网格，留余量
-            bucketPOIsToGrid(grid, allPois);    // ➜ 写入 cell.pois
+            bucketPOIsToGrid(allPois, grid);    // ➜ 写入 cell.pois
+            if (allPois == null) {
+                Log.e("POI Debug", "No POIs found in this cell.");
+            } else {
+                Log.e("POI Debug", "Found " + allPois.length() + " POIs to process.");
+            }
+
             extractTagsForGrid(grid);           // ➜ 用 POI 名称抽 tags（如 "park","lake","green path"...）
 
 // 可选：分发 avoid 提示到 cell
@@ -352,47 +359,76 @@ public class RouteGenAgent implements Agent {
     }
 
     /** 将 allPois 按“落在哪个 cell 的 1km 正方形（center±0.5km）”分桶写入 cell.pois。 */
-    private void bucketPOIsToGrid(Grid grid, JSONArray allPois) throws JSONException {
-        if (grid == null || grid.cells == null || allPois == null) return;
-        // 预计算每个 cell 的边界（lat/lng 方向各 ±0.5km）
-        for (Grid.Cell cell : grid.cells) {
-            // 以 cell center 为参考计算 0.5km 的经纬度偏移
-            double dLat05 = (0.5 /*km*/) / 111.32;
-            double dLng05 = (0.5 /*km*/) / (111.32 * Math.cos(Math.toRadians(cell.centerLat)));
-
-            double minLat = cell.centerLat - dLat05;
-            double maxLat = cell.centerLat + dLat05;
-            double minLng = cell.centerLng - dLng05;
-            double maxLng = cell.centerLng + dLng05;
-
-            cell.minLat = minLat; cell.maxLat = maxLat; // 临时字段（若你不想扩展 Cell，可用局部 Map 存）
-            cell.minLng = minLng; cell.maxLng = maxLng;
-        }
-
-        // 分桶
+    public void bucketPOIsToGrid(JSONArray allPois, Grid grid) {
+        // 遍历所有 POI
         for (int i = 0; i < allPois.length(); i++) {
-            JSONObject p = allPois.optJSONObject(i);
-            if (p == null) continue;
-            String name = p.optString("name", "");
-            double lat = p.optDouble("lat", p.optDouble("latitude", Double.NaN));
-            double lng = p.optDouble("lng", p.optDouble("longitude", Double.NaN));
-            if (Double.isNaN(lat) || Double.isNaN(lng)) continue;
+            // 获取 POI 数据（以字符串形式存在）
+            String poiItem = allPois.optString(i);
 
-            for (Grid.Cell cell : grid.cells) {
-                if (lat >= cell.minLat && lat <= cell.maxLat
-                        && lng >= cell.minLng && lng <= cell.maxLng) {
-                    JSONObject one = new JSONObject()
-                            .put("name", name)
-                            .put("lat", lat)
-                            .put("lng", lng);
-                    cell.pois.put(one);
-                    break; // 命中一个 cell 即可
+
+            // 假设 POI 格式为 "名称,(lat,lng)"
+            String[] parts = poiItem.split(",", 2);  // 分隔名称和坐标部分
+            if (parts.length == 2) {
+                String name = parts[0];  // POI 名称
+                String[] coords = parts[1].replace("(", "").replace(")", "").split(",");  // 提取坐标并去除括号
+                if (coords.length == 2) {
+                    try {
+                        double lat = Double.parseDouble(coords[0].trim());
+                        double lng = Double.parseDouble(coords[1].trim());
+
+                        // 创建一个有效的 JSONObject
+                        JSONObject p = new JSONObject();
+                        try {
+                            p.put("name", name);
+                            p.put("lat", lat);
+                            p.put("lng", lng);
+
+                            // 将 POI 添加到网格中的相应格子
+                            for (Grid.Cell cell : grid.cells) {
+                                // 以 cell center 为参考计算 0.5km 的经纬度偏移
+                                double dLat05 = 0.5 / 111.32;  // 0.5 km 的经度偏移量
+                                double dLng05 = 0.5 / (111.32 * Math.cos(Math.toRadians(cell.centerLat)));  // 经度偏移
+
+                                double minLat = cell.centerLat - dLat05;
+                                double maxLat = cell.centerLat + dLat05;
+                                double minLng = cell.centerLng - dLng05;
+                                double maxLng = cell.centerLng + dLng05;
+
+                                cell.minLat = minLat;
+                                cell.maxLat = maxLat;
+                                cell.minLng = minLng;
+                                cell.maxLng = maxLng;
+
+                                // 检查 POI 是否位于当前格子范围内
+                                if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
+                                    // 如果 POI 位于格子内，则将其添加到该格子的 POI 列表中
+                                    cell.addPOI(name, lat, lng);
+                                }
+                            }
+
+                        } catch (JSONException e) {
+                            Log.e("POI Debug", "Error creating JSON object: " + e.getMessage());
+                        }
+                    } catch (NumberFormatException e) {
+                        Log.e("POI Debug", "Invalid coordinates format at index " + i + ": " + e.getMessage());
+                    }
+                } else {
+                    Log.e("POI Debug", "Invalid coordinates at index " + i);
                 }
+            } else {
+                Log.e("POI Debug", "Invalid POI format at index " + i);
             }
         }
 
-
+        // 输出每个格子的经纬度范围及包含的 POI
+        for (Grid.Cell cell : grid.cells) {
+            Log.d("POI Debug", "Cell ID: " + cell.id + " Lat Range: [" + cell.minLat + ", " + cell.maxLat + "] Lng Range: [" + cell.minLng + ", " + cell.maxLng + "] POIs: " + cell.pois.length());
+        }
     }
+
+
+
+
 
 
     /** 仅给 LLM 基本信息：user_input/history/userlocation/targetHint + cells_lite（无 POIs） */
@@ -464,14 +500,8 @@ public class RouteGenAgent implements Agent {
         return "";
     }
 
-    /** 限长 history，避免 prompt 过大 */
-    private String trimHistory(String dialog, int maxChars) {
-        if (dialog == null) return "";
-        if (dialog.length() <= maxChars) return dialog;
-        return dialog.substring(dialog.length() - maxChars);
-    }
 
-    /** 从对话中提取 APP_CONTEXT 的用户位置 */
+
     private LatLng extractUserLocation() {
 
         LatLng loc= getUserLocation(ctx);
@@ -481,39 +511,7 @@ public class RouteGenAgent implements Agent {
     }
 
     /** 从对话中提取 API_Result 后面的 JSON 数组（POIs） */
-    private JSONArray extractApiPois(String dialog) {
-        if (dialog == null) return new JSONArray();
-        // 匹配 "API_Result:... [ ... ]"
-        Pattern p = Pattern.compile("API_Result[^{\\[]*(\\[.*?\\])", Pattern.DOTALL);
-        Matcher m = p.matcher(dialog);
-        String arr = null;
-        while (m.find()) arr = m.group(1); // 取最后一个数组
-        if (arr == null) return new JSONArray();
 
-        // 将 {latitude, longitude} 转为 {lat, lng}
-        try {
-            JSONArray src = new JSONArray(arr);
-            JSONArray out = new JSONArray();
-            for (int i = 0; i < src.length(); i++) {
-                JSONObject o = src.optJSONObject(i);
-                if (o == null) continue;
-                double lat = o.has("lat") ? o.optDouble("lat", Double.NaN)
-                        : o.has("latitude") ? o.optDouble("latitude", Double.NaN) : Double.NaN;
-                double lng = o.has("lng") ? o.optDouble("lng", Double.NaN)
-                        : o.has("longitude") ? o.optDouble("longitude", Double.NaN) : Double.NaN;
-                if (Double.isNaN(lat) || Double.isNaN(lng)) continue;
-                String name = o.optString("name", "poi");
-                out.put(new JSONObject().put("name", name).put("lat", lat).put("lng", lng));
-            }
-            return out;
-        } catch (Throwable ignore) {
-            return new JSONArray();
-        }
-    }
-
-    private double safeDouble(String s) {
-        try { return Double.parseDouble(s); } catch (Throwable e) { return Double.NaN; }
-    }
 
     // ========================= GPT prompt =========================
 
@@ -626,28 +624,67 @@ public class RouteGenAgent implements Agent {
 
 
     /** 从每个 cell 的 POI 名称抽标签 */
-    private void extractTagsForGrid(Grid g) throws JSONException {
-        for (Grid.Cell cell : g.cells) {
-            Set<String> set = new LinkedHashSet<>();
-            JSONArray pois = cell.pois;
-            for (int i = 0; i < (pois == null ? 0 : pois.length()); i++) {
-                JSONObject p = pois.optJSONObject(i);
-                if (p == null) continue;
-                String name = p.optString("name", "").toLowerCase(Locale.ROOT);
-                addTagIf(name, set, "park",        "park","公园","绿地");
-                addTagIf(name, set, "Green path",  "greenway","green path","trail","步道","绿道","walkway");
-                addTagIf(name, set, "lake",        "lake","湖","pond","水库");
-                addTagIf(name, set, "river",       "river","江","河");
-                addTagIf(name, set, "mall",        "mall","购物中心","广场","plaza");
-                addTagIf(name, set, "university",  "university","college","大学","学院");
-                addTagIf(name, set, "museum",      "museum","博物馆");
-                addTagIf(name, set, "library",     "library","图书馆");
-                addTagIf(name, set, "coffee",      "coffee","starbucks","星巴克","咖啡");
+    public void extractTagsForGrid(Grid grid) {
+        // 获取 POIs 数据
+        ArrayList<Grid.Cell> cells = grid.cells; // 如果是 Grid 类的实例
+        for (Grid.Cell gridCell : cells) {
+            JSONArray pois = gridCell.pois; // 获取当前格子中的 POIs
+
+            // 检查 POIs 是否为空
+            if (pois == null || pois.length() == 0) {
+                Log.d("POI Debug", "No POIs found in this cell.");
+                continue; // 跳过没有 POI 的格子
+            } else {
+                Log.d("POI Debug", "Found " + pois.length() + " POIs to process.");
             }
-            cell.tags = new JSONArray();
-            for (String s : set) cell.tags.put(s);
+
+            // 初始化更丰富的标签列表
+            String[] tags = {
+                    "公园", "湖", "商场", "学校", "医院", "餐馆", "绿道", "博物馆", "咖啡馆", "步道",
+                    "购物中心", "电影院", "超市", "书店", "体育馆", "停车场", "旅游景点", "艺术中心", "夜市"
+            };
+
+            // 使用 Set 来去重标签
+            Set<String> uniqueTags = new HashSet<>();
+
+            // 遍历每个 POI
+            for (int i = 0; i < pois.length(); i++) {
+                try {
+                    JSONObject poi = pois.getJSONObject(i); // 获取每个 POI
+                    String poiName = poi.optString("name"); // 获取 POI 的名称，假设 POI 存储有 `name` 字段
+
+                    if (poiName != null && !poiName.isEmpty()) {
+
+
+                        // 遍历标签，检查 POI 名称是否包含标签关键词
+                        for (String tag : tags) {
+                            // 在 POI 名称中查找标签，中文匹配
+                            if (poiName.contains(tag)) {
+
+                                // 如果匹配，则将标签加入 Set（会自动去重）
+                                uniqueTags.add(tag);
+                            }
+                        }
+                    }
+                } catch (JSONException e) {
+                    Log.d("POI Debug", "Error processing POI: " + e.getMessage());
+                }
+            }
+
+            // 将去重后的标签集合转回 JSONArray 并赋值给 gridCell
+            gridCell.tags = new JSONArray(uniqueTags);
+
+            // 输出标签赋值结果
+            if (gridCell.tags.length() > 0) {
+                Log.d("POI Debug", "Tags successfully assigned: " + gridCell.tags.toString());
+            } else {
+                Log.d("POI Debug", "No tags assigned to this cell.");
+            }
         }
     }
+
+
+
 
     /** 分发 avoidHint（当前为空；未来如有可直接传入） */
     private void distributeAvoids(Grid g, JSONArray avoid) throws JSONException {
