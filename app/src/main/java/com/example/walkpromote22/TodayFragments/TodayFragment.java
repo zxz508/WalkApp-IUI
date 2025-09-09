@@ -211,62 +211,57 @@ public class TodayFragment extends Fragment {
 
 
 
-        final LatLng[] userLocation = new LatLng[1];
-        final String[] weather = new String[1];
-
         // false表面调用固定测试地址（西交利物浦大学）
-        try {
-            getCurrentLocation(true,requireContext(), new ChatbotFragment.LocationCallback() {
-                @Override
-                public void onLocationReceived(LatLng location) throws Exception {
-                    SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
-                    prefs.edit().putString("location_lat", String.valueOf(location.latitude)).apply();
-                    prefs.edit().putString("location_long", String.valueOf(location.longitude)).apply();
-                    userLocation[0] = location;
-                    Log.e("App Startup", "定位成功：" + location.latitude + ", " + location.longitude);
+        // 在 onCreateView 中替换位置请求代码
+        new Thread(() -> {
+            try {
+                getCurrentLocation(true, requireContext(), new ChatbotFragment.LocationCallback() {
+                    @Override
+                    public void onLocationReceived(LatLng location) throws Exception {
+                        // 保存位置信息
+                        SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
+                        prefs.edit().putString("location_lat", String.valueOf(location.latitude)).apply();
+                        prefs.edit().putString("location_long", String.valueOf(location.longitude)).apply();
+                        Log.e("App Startup", "定位成功：" + location.latitude + ", " + location.longitude);
 
+                        // 在后台线程执行 POI 获取
+                        fetchPOIs(requireContext(), location, 5000);
 
-                    Log.e(TAG,"提前尝试抓取POI");
+                        // 在后台线程执行天气请求
+                        WeatherTool.getCityCodeFromLatLng(requireContext(), location, new WeatherTool.CityCodeCallback() {
+                            @Override
+                            public void onCodeResolved(String cityCode) {
+                                WeatherTool.fetchWeatherWithCode(cityCode, new WeatherTool.WeatherCallback() {
+                                    @Override
+                                    public void onWeatherReceived(String weatherInfo) {
+                                        SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
+                                        prefs.edit().putString("weather", weatherInfo).apply();
+                                        Log.e("App Startup", "天气信息获取成功：" + weatherInfo);
+                                    }
 
-                    fetchPOIs(requireContext(),userLocation[0], 5000);
+                                    @Override
+                                    public void onError(String errorMessage) {
+                                        Log.e("App Startup", "天气请求失败：" + errorMessage);
+                                    }
+                                });
+                            }
 
+                            @Override
+                            public void onError(String message) {
+                                Log.e("App Startup", "获取城市编码失败：" + message);
+                            }
+                        });
+                    }
 
-                    // 请求天气
-                    WeatherTool.getCityCodeFromLatLng(requireContext(), userLocation[0], new WeatherTool.CityCodeCallback() {
-                        @Override
-                        public void onCodeResolved(String cityCode) {
-                            WeatherTool.fetchWeatherWithCode(cityCode, new WeatherTool.WeatherCallback() {
-                                @Override
-                                public void onWeatherReceived(String weatherInfo) {
-                                    weather[0] = weatherInfo;
-                                    // 存天气
-                                    SharedPreferences prefs = requireContext().getSharedPreferences("AppData", MODE_PRIVATE);
-                                    prefs.edit().putString("weather", weather[0]).apply();
-                                    Log.e("App Startup", "天气信息获取成功：" + weather[0]);
-                                }
-
-                                @Override
-                                public void onError(String errorMessage) {
-                                    Log.e("App Startup", "天气请求失败：" + errorMessage);
-                                }
-                            });
-                        }
-
-                        @Override
-                        public void onError(String message) {
-                            Log.e("App Startup", "获取城市编码失败：" + message);
-                        }
-                    });
-                }
-
-                @Override
-                public void onLocationFailed(String error) {
-                    Log.e("App Startup", "定位失败：" + error);
-                }
-            });
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+                    @Override
+                    public void onLocationFailed(String error) {
+                        Log.e("App Startup", "定位失败：" + error);
+                    }
+                });
+            } catch (Exception e) {
+                Log.e("App Startup", "位置请求异常：" + e.getMessage());
+            }
+        }).start();
 
 
 

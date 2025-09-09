@@ -288,7 +288,7 @@ public class MapTool extends LinearLayout {
                 if (loc != null) latLngList.add(new LatLng(loc.getLatitude(), loc.getLongitude()));
             }
             try {
-                drawRoute(latLngList, 0xFFADD8E6);
+                drawRoute(latLngList, 0xFF6A8EB1);
             } catch (Throwable drawEx) {
                 Log.e(TAG, "[startLocation] drawRoute error: " + drawEx.getMessage(), drawEx);
             }

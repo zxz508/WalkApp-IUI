@@ -5,6 +5,7 @@ import static android.content.ContentValues.TAG;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -40,6 +41,8 @@ import com.example.walkpromote22.data.model.User;
 import com.example.walkpromote22.service.ApiService;
 import com.example.walkpromote22.tool.UserPreferences;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -70,6 +73,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView navChatbot;
     private SharedPreferences sharedPreferences;
     private static final int REQ_ACTIVITY_RECOGNITION = 1001;
+    private static final int PERMISSION_REQUEST_CODE = 1001;
+
     // 使用单线程执行器进行后台操作
     private ExecutorService executorService = Executors.newSingleThreadExecutor();
 
@@ -88,6 +93,20 @@ public class MainActivity extends AppCompatActivity {
             setContentView(R.layout.activity_home);
         }
         checkAndRequestActivityPermission();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.FOREGROUND_SERVICE_HEALTH) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.FOREGROUND_SERVICE_HEALTH},
+                        PERMISSION_REQUEST_CODE);
+            } else {
+                // 已经拥有权限，启动服务
+                startService();
+            }
+        } else {
+            // 对于较低版本，不需要这个权限，直接启动服务
+            startService();
+        }
 
 
 
@@ -216,6 +235,43 @@ public class MainActivity extends AppCompatActivity {
 
     }
 
+    private void checkAndRequestPermissions() {
+        List<String> permissionsNeeded = new ArrayList<>();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.FOREGROUND_SERVICE_HEALTH) != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.FOREGROUND_SERVICE_HEALTH);
+            }
+        }
+
+        if (ContextCompat.checkSelfPermission(this,
+                Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        }
+
+        if (ContextCompat.checkSelfPermission(this,
+                Manifest.permission.BODY_SENSORS) != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(Manifest.permission.BODY_SENSORS);
+        }
+
+        if (!permissionsNeeded.isEmpty()) {
+            ActivityCompat.requestPermissions(this,
+                    permissionsNeeded.toArray(new String[0]),
+                    PERMISSION_REQUEST_CODE);
+        } else {
+            startService();
+        }
+    }
+
+
+
+
+    private void startService() {
+        Intent serviceIntent = new Intent(this, StepService.class);
+        ContextCompat.startForegroundService(this, serviceIntent);
+    }
+
     public void updateNavigationSelection(int navButtonId, Fragment fragment) {
         // 更新按钮颜色
         Log.e("e","111");
@@ -290,24 +346,25 @@ public class MainActivity extends AppCompatActivity {
      * 接收申请结果
      */
     @Override
-    public void onRequestPermissionsResult(
-            int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
-        if (requestCode == REQ_ACTIVITY_RECOGNITION) {
-            if (grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // 用户同意
-                onActivityPermissionGranted();
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            boolean allGranted = true;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+
+            if (allGranted) {
+                startService();
             } else {
-                // 用户拒绝，可做降级处理或提示
-                Toast.makeText(this,
-                        "没有活动识别权限，无法计步哦～", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Permissions denied. Step counting may not work.", Toast.LENGTH_LONG).show();
             }
         }
     }
-
     /**
      * 获得权限后的初始化逻辑（比如启动 StepService 或绑定 Provider）
      */

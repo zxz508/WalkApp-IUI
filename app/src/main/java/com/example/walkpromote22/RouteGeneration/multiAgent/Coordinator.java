@@ -567,8 +567,6 @@ public class Coordinator {
         try {
             if (seed == null) { Log.d(TAG, "seed: <null>"); return; }
             if (seed.cell != null) {
-                Log.d(TAG, String.format("seed: cell id=%d center(%.6f,%.6f)",
-                        seed.cell.id, seed.cell.centerLat, seed.cell.centerLng));
             } else if (seed.waypoints != null) {
                 Log.d(TAG, "seed: waypoints count=" + seed.waypoints.length());
             } else {

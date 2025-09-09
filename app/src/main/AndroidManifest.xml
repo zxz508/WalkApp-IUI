@@ -9,7 +9,6 @@
     </queries>
 
     <!-- 位置权限及网络权限 -->
-
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
@@ -36,6 +35,10 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="com.huawei.hms.permission.ACTIVITY_RECOGNITION"/>
+
+    <uses-permission android:name="android.permission.HEALTH_DATA" />
+
+
 
 
     <!-- MANAGE_EXTERNAL_STORAGE 权限仅在必要时申请，通常只针对特定需求 -->
@@ -82,6 +85,7 @@
             android:exported="false"
             android:foregroundServiceType="health"
             android:enabled="true"
+            android:permission="android.permission.FOREGROUND_SERVICE_HEALTH"
             tools:ignore="ForegroundServicePermission,MissingClass" />
 
         <!-- LoginActivity 配置 -->

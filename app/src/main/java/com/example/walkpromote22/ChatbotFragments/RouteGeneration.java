@@ -203,8 +203,8 @@ public class RouteGeneration {
         // ---------------- 1) system + few-shot ----------------
         final long tSys0 = System.currentTimeMillis();
         String sysPrompt =
-                "你只能回复我{***}的格式，下面时具体要求：" +
-                        "分析下面用户的语句中是否有提到要去到或者从其中出发的地名或者店名（只要是能在地图上查询到的都包括在内，请考虑同义词），" +
+                "你是一个POI名词提取助手，你只能回复我{***}的格式，下面时具体要求：" +
+                        "尽力分析，你可以多花一点时间思考。下面用户的语句中是否包含任何可能是地名或者地点名的名词（只要是能在地图上查询到相关词的都包括在内，请考虑同义词），" +
                         "如果有请返回{A1,A2,B1,B2,...}的格式，其中A1中文名、A2英文名（若无可留空），多个POI依次列出；" +
                         "如果没有提到任何POI名称或者地名等信息，则返回{0}。" +
                         "注意：只输出大括号包裹的内容，不能包含其他说明或前后缀；大括号使用半角{}（若误用全角｛｝也可以）。" +
@@ -216,6 +216,8 @@ public class RouteGeneration {
         String fsAsst2 = "标准输出:{独墅湖邻里中心, Dushu Lake Neighborhood Center, 苏州中心, Suzhou Center, 诚品生活, ESlite Life}";
         String fsUser3 = "I wanna eat KFC";
         String fsAsst3 = "标准输出:{肯德基, KFC}";
+        String fsUser4 = "I would like to have a walk to a park, any suggestions?";
+        String fsAsst4 = "标准输出:{公园, park}";
 
 
         JSONArray hist = new JSONArray()
@@ -225,7 +227,9 @@ public class RouteGeneration {
                 .put(new JSONObject().put("role", "user").put("content", fsUser2))
                 .put(new JSONObject().put("role", "assistant").put("content", fsAsst2))
                 .put(new JSONObject().put("role", "user").put("content", fsUser3))
-                .put(new JSONObject().put("role", "assistant").put("content", fsAsst3));
+                .put(new JSONObject().put("role", "assistant").put("content", fsAsst3))
+                .put(new JSONObject().put("role", "user").put("content", fsUser4))
+                .put(new JSONObject().put("role", "assistant").put("content", fsAsst4));;
         hist = prependTranscript(hist, safeGetTranscript());
 
         final long tSys1 = System.currentTimeMillis();
@@ -237,12 +241,11 @@ public class RouteGeneration {
         final long tLlm0 = System.currentTimeMillis();
         CountDownLatch latch = new CountDownLatch(1);
         ChatbotHelper helper = new ChatbotHelper();
+        Log.e(TAG, "Finding request="+requirment );
         helper.sendMessage(requirment == null ? "" : requirment, hist, new ChatbotResponseListener() {
             @Override public void onResponse(String r) {
                 reply[0] = r;
-                Log.i(TAG, trace + " LLM_onResponse len=" + (r == null ? -1 : r.length()) +
-                        " cost=" + (System.currentTimeMillis() - tLlm0) + "ms " +
-                        " head=" + cut.apply(r, 120));
+               Log.e(TAG,"地名提取agent提取结果="+r);
                 latch.countDown();
             }
             @Override public void onFailure(String e) {
@@ -253,9 +256,9 @@ public class RouteGeneration {
         });
 
         try {
-            boolean ok = latch.await(40, java.util.concurrent.TimeUnit.SECONDS);
+            boolean ok = latch.await(100, java.util.concurrent.TimeUnit.SECONDS);
             if (!ok) {
-                Log.e(TAG, trace + " LLM_TIMEOUT wait=25s");
+                Log.e(TAG, trace + " LLM_TIMEOUT wait=100s");
                 throw new JSONException("TIMEOUT_WAITING_GPT");
             }
         } catch (InterruptedException ie) {
@@ -801,7 +804,7 @@ public class RouteGeneration {
         final String TAG = "POI_ALLF";
         final long   STALE_MS         = 7L * 24 * 60 * 60 * 1000L;
         final int    PAGE_SZ          = 25, PAGE_CAP = 100, PER_BLOCK_MAX = 1000;
-        final double GRID_MAX_SIDEM   = 1000.0;
+        final double GRID_MAX_SIDEM   = 100.0;
         final int    LOCAL_READ_LIMIT = 80000;
 
         final String[][] TYPE_GROUPS = new String[][]{

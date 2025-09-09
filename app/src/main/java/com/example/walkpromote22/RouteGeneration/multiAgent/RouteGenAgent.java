@@ -82,7 +82,7 @@ public class RouteGenAgent implements Agent {
             // ...前略（解析 dialogForRoute / userLoc 等相同）...
 
 // ================= 2) 按“以 userlocation 为第一个 cell 的 center”构建 10×10 网格 =================
-            Grid grid = buildGridAroundUserAsCenter(userLoc, /*gridSize*/10, /*cellSizeMeters*/1000);
+            Grid grid = buildGridAroundUserAsCenter(userLoc, /*gridSize*/20, /*cellSizeMeters*/500);
 
 // ================= 3) 注入 POIs 到 cell（仅为 DETAIL 使用；不传给 GPT） =================
             JSONArray allPois = safeFetchPois(userLoc, /*radiusMeters*/5200); // 覆盖±5km 网格，留余量
@@ -242,6 +242,8 @@ public class RouteGenAgent implements Agent {
 
                         // ★★ 关键：不再发单个 cell，而是以 waypoints(JSONArray) 发送多 cell + cell_path
                         fut.complete(Agent.Msg.send(Role.GEN, Role.DETAIL, pack));
+                        // 在 onResponse 方法中添加
+                        Log.d("CellPath", "Generated cell_path: " + cellPath.toString());
 
                     } catch (Throwable ex) {
                         // 解析失败兜底：至少保证用户 cell 存在，并命名 Begining Point
@@ -386,8 +388,8 @@ public class RouteGenAgent implements Agent {
                             // 将 POI 添加到网格中的相应格子
                             for (Grid.Cell cell : grid.cells) {
                                 // 以 cell center 为参考计算 0.5km 的经纬度偏移
-                                double dLat05 = 0.5 / 111.32;  // 0.5 km 的经度偏移量
-                                double dLng05 = 0.5 / (111.32 * Math.cos(Math.toRadians(cell.centerLat)));  // 经度偏移
+                                double dLat05 = 0.25 / 111.32;  // 0.5 km 的经度偏移量
+                                double dLng05 = 0.25 / (111.32 * Math.cos(Math.toRadians(cell.centerLat)));  // 经度偏移
 
                                 double minLat = cell.centerLat - dLat05;
                                 double maxLat = cell.centerLat + dLat05;
@@ -420,10 +422,7 @@ public class RouteGenAgent implements Agent {
             }
         }
 
-        // 输出每个格子的经纬度范围及包含的 POI
-        for (Grid.Cell cell : grid.cells) {
-            Log.d("POI Debug", "Cell ID: " + cell.id + " Lat Range: [" + cell.minLat + ", " + cell.maxLat + "] Lng Range: [" + cell.minLng + ", " + cell.maxLng + "] POIs: " + cell.pois.length());
-        }
+
     }
 
 
@@ -522,9 +521,9 @@ public class RouteGenAgent implements Agent {
                 "输入 JSON：包含 user_input, history, userlocation, targetHint, avoidHint, cells。\n" +
                 "\n" +
                 "【关于 cell】:\n" +
-                "  - 每个 cell 是一个边长 1 公里的正方形区域。\n" +
+                "  - 每个 cell 是一个边长 500m的正方形区域。\n" +
                 "  - center 表示 cell 的几何中心点坐标。\n" +
-                "  - cell 覆盖的范围是：center ±0.5 km。\n" +
+                "  - cell 覆盖的范围是：center ±50m。\n" +
                 "  - 任何锚点（anchor）的坐标必须落在某个 cell 的范围内，才能放入该 cell 的 anchor 数组。\n" +
                 "\n" +
                 "【任务1：锚点识别】\n" +
@@ -544,10 +543,12 @@ public class RouteGenAgent implements Agent {
                 "  - 在给部分cell赋予锚点之后，你还必须输出一个 cell 路径作为最终输出（数组形式）。\n" +
                 "  - 规则：\n" +
                 "    1) 路径由一系列 cell_id 构成，必须相邻（共享边或角）。\n" +
-                "    2) 路径起点必须是包含 \"Beginning Point\" 的 cell。\n" +
-                "    3) 如果用户要求去某个 POI（如 KFC），则路径必须覆盖该 cell。\n" +
-                "    4) 如果用户要求“散步 N 公里”，则路径总长度（cell 数 × 1km）应尽量接近 N 公里，必要时形成闭环（回到起点）。\n" +
-                "    5) 尽量经过标签更符合用户偏好的 cell（如散步=park/green path，休闲=lake）。\n" +
+                "    2) cell的顺序就是行走的顺序，"+
+                "    3) 路径起点必须是包含 \"Beginning Point\" 的 cell。\n" +
+                "    4) 如果用户要求去某个 POI（如 KFC），则路径必须覆盖该 cell。\n" +
+                "    5) 如果用户要求“散步 N 公里”，则路径总长度（cell 数 × 500m）应尽量接近 N 公里，必要时形成闭环（回到起点）cell之间最好是不存在斜对关系。\n" +
+                "    6) ***当用户明确提到了要一个环形路线或者最终要回到起点，那么你给出的cell路线就必须是一个口字型的路线（中间应该是空的，不包含cell，外围围成一个口字型）***"+
+                "    7) 尽量经过标签更符合用户偏好的 cell（如散步=park/green path，休闲=lake）。\n" +
                 "\n" +
                 "【示例输出】:\n" +
                 "{\n" +
@@ -702,21 +703,8 @@ public class RouteGenAgent implements Agent {
         }
     }
 
-    /** 发给 GPT 的精简 grid：id/center/tags/avoidHint/POIs（Anchor 留空） */
-    private JSONArray gridToSlimJson(Grid g) throws JSONException {
-        JSONArray arr = new JSONArray();
-        for (Grid.Cell c : g.cells) {
-            arr.put(new JSONObject()
-                    .put("id", c.id)
-                    .put("center", new JSONObject().put("lat", c.centerLat).put("lng", c.centerLng))
-                    .put("Length of side", "1_km")
-                    .put("tags", c.tags == null ? new JSONArray() : c.tags)
-                    .put("avoidHint", c.avoidHint == null ? new JSONArray() : c.avoidHint)
-                    .put("POIs", c.pois == null ? new JSONArray() : c.pois)
-                    .put("Anchor", new JSONArray())); // 留空——由 GPT 决策
-        }
-        return arr;
-    }
+
+
 
     private int whichRow(Grid g, double lat) {
         double d = g.north - lat;

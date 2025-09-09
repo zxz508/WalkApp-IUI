@@ -1,5 +1,7 @@
 package com.example.walkpromote22.RouteGeneration.multiAgent;
 
+import android.util.Log;
+
 import com.amap.api.maps.model.LatLng;
 import com.example.walkpromote22.ChatbotFragments.ChatbotHelper;
 import com.example.walkpromote22.ChatbotFragments.ChatbotResponseListener;
@@ -117,6 +119,7 @@ public class RouteDetailAgent implements Agent {
                             wps = sequenceToWaypoints(seq);
                         }
 
+                        Log.e("TAG","detailAgent结果="+wps);
                         // 3) 兜底：仅 anchors 串起来（包含 start）
                         if (wps == null || wps.length() == 0) {
                             wps = anchorsOnlyFromCells(cellsFromMsg, finalStart, "empty-waypoints");
@@ -262,10 +265,11 @@ public class RouteDetailAgent implements Agent {
                 "请输出最终路线上要绘制的点序列 waypoints，规则：\n" +
                 "  1) 锚点必须包含，且首个点必须是名称为 \"Begining Point\" 的起点；\n" +
                 "  2) 应该远离一些危险POI（事故或者封路维修）或者用户不喜欢的POI"+
-                "  3) 仅当“有助/贴合用户需求与 POI 类别、名称”时，才从 POIs 中补点；\n" +
-                "  4) 当用户表面要直接前往某地的时候，只考虑锚点而不能添加额外的POI"+
-                "  5) 路线应平滑、经纬度变化有规律；避免穿越 avoidHint 所指范围；\n" +
-                "  6) 输出坐标键一律为 lat/lng（不要使用 latitude/longitude）。\n" +
+                "  3) 当用户表面要直接前往某地的时候，只考虑锚点而不能添加额外的POI"+
+                "  4) ***当用户没有表明最终目的地的时候，每个cell中必须选一个POI（择优）***"+
+                "  5) 当用户想要走一个环形路线或者散散步时，尽量让重点接近或者回答起点"+
+                "  6) 最重要的一点***路线应平滑、经纬度变化有规律***；避免穿越 avoidHint 所指范围；\n" +
+                "  7) 输出坐标键一律为 lat/lng（不要使用 latitude/longitude）。\n" +
                 "\n" +
                 "仅输出严格 JSON（不得有多余文本）：\n" +
                 "{\n" +
@@ -281,7 +285,7 @@ public class RouteDetailAgent implements Agent {
         return new JSONObject()
                 .put("id", cell.id)
                 .put("center", new JSONObject().put("lat", cell.centerLat).put("lng", cell.centerLng))
-                .put("Length of side", "1_km")
+                .put("Length of side", "500m")
                 .put("tags", cell.tags == null ? new JSONArray() : cell.tags)
                 .put("avoidHint", cell.avoidHint == null ? new JSONArray() : cell.avoidHint)
                 .put("Anchor", cell.anchor == null ? new JSONArray() : cell.anchor)

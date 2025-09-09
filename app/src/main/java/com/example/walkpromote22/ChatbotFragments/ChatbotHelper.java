@@ -77,7 +77,7 @@ public class ChatbotHelper {
 
         // 传递整个对话历史给 GPT
         JSONArray finalConversationHistory = conversationHistory;
-        sendChatMessages("gpt-4o-2024-08-06", conversationHistory, 500, 0.1, new okhttp3.Callback() {
+        sendChatMessages("gpt-4o-2024-08-06", conversationHistory, 500, 0.6, new okhttp3.Callback() {
             @Override
             public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
                 try {

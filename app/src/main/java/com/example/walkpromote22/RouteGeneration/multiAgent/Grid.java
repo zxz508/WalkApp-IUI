@@ -11,7 +11,7 @@ import java.util.Collection;
 
 /**
  * 10×10 网格的轻量容器；每个 cell 含你要求的属性：
- * id / center{lat,lng} / "Length of side":"1_km" / tags[] / avoidHint[] / Anchor[] / POIs[]
+ * id / center{lat,lng} / "Length of side":"500m" / tags[] / avoidHint[] / Anchor[] / POIs[]
  */
 public class Grid {
     public  int n;                // 每边格子数，固定 10
@@ -53,7 +53,7 @@ public class Grid {
             return new JSONObject()
                     .put("id", id)
                     .put("center", new JSONObject().put("lat", centerLat).put("lng", centerLng))
-                    .put("Length of side", "1_km")
+                    .put("Length of side", "500m")
                     .put("tags", tags)
                     .put("avoidHint", avoidHint)
                     .put("Anchor", anchor)

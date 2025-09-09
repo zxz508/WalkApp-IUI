@@ -1,5 +1,8 @@
 package com.example.walkpromote22.TodayFragments;
 
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH;
+
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -11,6 +14,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -26,7 +30,9 @@ import android.os.RemoteException;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import com.example.walkpromote22.Activities.MainActivity;
 import com.example.walkpromote22.Manager.StepSyncManager;
@@ -65,6 +71,7 @@ public class StepService extends Service implements SensorEventListener {
     /** SharedPreferences 缓存键，供 SensorStepProvider 读取 */
     private static final String PREF_NAME      = "step_service_cache";
     private static final String KEY_TODAY_STEP = "today_steps";
+    private static final int PERMISSION_REQUEST_CODE = 100 ;
 
     // ==================== 运行时字段 ====================
     private SensorManager sensorManager;
@@ -118,6 +125,8 @@ public class StepService extends Service implements SensorEventListener {
         super.onCreate();
         stepDao   = AppDatabase.getDatabase(getApplicationContext()).stepDao();
         todayDate = TimeUtil.getCurrentDate();
+
+
 
 
         // StepService.onCreate()
@@ -231,7 +240,14 @@ public class StepService extends Service implements SensorEventListener {
                 .setContentTitle("Today\u2019s steps: 0")
                 .setContentText("Let\u2019s move!");
 
-        startForeground(NOTIFY_ID, builder.build());
+        // Add this import at the top of your file if not already present:
+        // import static android.content.Context.FOREGROUND_SERVICE_TYPE_HEALTH;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFY_ID, builder.build(), FOREGROUND_SERVICE_TYPE_HEALTH);
+        } else {
+            startForeground(NOTIFY_ID, builder.build());
+        }
     }
 
     private void updateNotification() {

@@ -114,6 +114,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class ChatbotFragment extends Fragment {
@@ -154,6 +155,7 @@ public class ChatbotFragment extends Fragment {
     private RecyclerView rvChat;
     private EditText etChat;
     private View btnSendChat;
+    private boolean hascertain=false;
     LinearLayout chatModeContainer;
     LinearLayout navigationModeContainer;
     // ChatbotFragment 字段区
@@ -329,11 +331,9 @@ public class ChatbotFragment extends Fragment {
                 String formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
                 // 准备 system promote
                 String promote ="You are an route planing assistant in English for user and you can get extra information's from API rather than user, ****don't mention any longitude and latitude in your conversation**** "+
-                            "You should begin with questions like: To create the best route, I need a bit of info:" + "How long do you want to walk (time or distance)?" + "Do you prefer quiet streets, scenic spots, or lively areas?"+
                             "Following are very important:*****" +
                             "When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON (respond {Map_API_Certain} before if user has a clear destination)" +
                             "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain} and API will give you correspond POIs name and locations FROM NEAR TO FAR"+
-                            "When you want to show user the route drawing in map, you should ask user to wait a second and respond with: {Drawing_API} and API will draw the route. " +
                             "When you want to get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
                             "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
                             "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}"+
@@ -341,11 +341,32 @@ public class ChatbotFragment extends Fragment {
                             "You can only use token twice in a row without the user requesting it"+
                             "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
                             "Don't keep saying Great by the way"+
-                            "Here's a sample conversation1 I'd like you to have with your users(Only for sample,you should have different talk in different weather,time and so on):" +
-                            "Sample Conversation1\n" +
-                            "User: Generate a suitable route for me\n" +
-                            "App: Great! To create the best route, I need a bit of info:\n" +
-                            "App:How long do you want to walk (time or distance)?\n" +
+                            "Here's a sample conversation1 I'd like you to have with your users(*****Only for sample,you should have different talk in different situations, weather,time and so on*****):" +
+                            "Sample Conversation1:" +
+                            "App: 👋 Hi there! Ready for a refreshing walk today?\n"+
+                            "User:I wanna walk to a KFC\n"+
+                            "App:Got it ✅ Checking nearby KFCs.{Map_API_Certain}"+
+                            "App:OK, I have found several KFC around you. Which specifically you aim at?\n"+
+                            "User:The one around my home"+
+                            "App:Got it, generating a route to it.{Map_API_Route}"+
+                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
+                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
+                            "User:Yes, please"+
+                            "App:{Navigation_API}"+
+                            "Sample Conversation2:" +
+                            "User:I would like to have a walk to a park, any suggestions?"+
+                            "App:Got it ✅ Checking nearby parks.{Map_API_Certain}"+
+                            "App:OK, I have found several parks around you. Which specifically you aim at?\n"+
+                            "App:Got it, generating a route to it.{Map_API_Route}"+
+                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
+                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
+                            "User:Yes, please"+
+                            "App:{Navigation_API}"+
+                            "Sample Conversation3\n" +
+                            "User:Generate a suitable route for me\n" +
+                            "App:Great! To create the best route, I need a bit of info:\n" +
+                            "App:Are there any places you would like to pass by or avoid?"+
+                            "App:Do you have a specific destination?If not, how long do you want to walk (time or distance)?\n" +
                             "App:Do you prefer quiet streets, scenic spots, or lively areas?\n" +
                             "User: Maybe around 30 minutes. And I’d like a scenic route.\n" +
                             "App: Got it ✅ Checking nearby parks, riversides, and trails… please wait a second. {Map_API_Route}.\n" +
@@ -361,18 +382,8 @@ public class ChatbotFragment extends Fragment {
                             "User (end): I’m done!\n" +
                             "App: 🎉 Congratulations! You walked 2.6 km in 31 minutes. That’s about 3,400 steps. I’ve saved your route in case you want to share it on your socials. Want me to post a highlight for you?\n" +
                             "User: Yes, post it.\n" +
-                            "App: Done ✅ Shared your walk summary with today’s scenic photo. 🌄 Way to go—you made today healthier and brighter!"+
-                            "Sample Conversation2:" +
-                            "App: 👋 Hi there! Ready for a refreshing walk today?\n"+
-                            "User:I wanna walk to a KFC\n"+
-                            "App:Got it ✅ Checking nearby KFCs.{Map_API_Certain}"+
-                            "App:OK, I have found several KFC around you. Which specifically you aim at?\n"+
-                            "User:The one around my home"+
-                            "App:Got it, generating a route to it.{Map_API_Route}"+
-                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
-                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
-                            "User:Yes, please"+
-                            "App:{Navigation_API}";
+                            "App: Done ✅ Shared your walk summary with today’s scenic photo. 🌄 Way to go—you made today healthier and brighter!"
+                            ;
 
                 // 把 promote 放到首位，且只插一次
                 // ==== 修改点 1：更新 localConversationHistory ====
@@ -529,7 +540,7 @@ public class ChatbotFragment extends Fragment {
 
         // 自动调用上限，防止循环
         final java.util.concurrent.atomic.AtomicInteger apiHops = new java.util.concurrent.atomic.AtomicInteger(0);
-        final int MAX_API_HOPS = 2;
+        final int MAX_API_HOPS = 1;
 
         // ===== 触发令牌（支持两种写法：{Token} 与 Request:{Token}）=====
         final int CI = java.util.regex.Pattern.CASE_INSENSITIVE;
@@ -577,6 +588,7 @@ public class ChatbotFragment extends Fragment {
         feedRef.set((String toolPayload) -> {
             // === 新增：在发送前，把工具回执写入 全局 & 本地 & 当前 history ===
 
+
             try {
                 org.json.JSONObject toolMsg = new org.json.JSONObject()
                         .put("role", "assistant")
@@ -598,12 +610,23 @@ public class ChatbotFragment extends Fragment {
 
             if (apiHops.incrementAndGet() == MAX_API_HOPS) {
                 apiHops.set(0);
-                String promote = "The method called by your token has been implemented, but you can no longer call the token continuously. Please ask if you want to invoke tokens later"
+                String promote = "The method called by your token has been implemented。 If you didn't just ask for the user's input on what to do next, ask for his input, and if you did, ignore these"
                         + (toolPayload == null ? "" : toolPayload);
 
                 try {
                     chatbotHelper.sendMessage(promote, historyToSend, new ChatbotResponseListener() {
                         @Override public void onResponse(String reply2) {
+                            try {
+                                Log.e(TAG,"repley12311123="+reply2);
+                                org.json.JSONObject assistantReply = new org.json.JSONObject()
+                                        .put("role", "assistant")
+                                        .put("content", reply2 == null ? "" : reply2);
+                                if (localConversationHistory != null) {
+                                    localConversationHistory.put(assistantReply); // 将 GPT 回复存入历史
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
                             Consumer<String> h = handleRef.get();
                             if (h != null) h.accept(reply2);
 
@@ -620,6 +643,16 @@ public class ChatbotFragment extends Fragment {
                     chatbotHelper.sendMessage(toolPayload == null ? "" : toolPayload, historyToSend, new ChatbotResponseListener() {
                         @Override public void onResponse(String reply2) {
                             Log.e(TAG,"repley1231="+reply2);
+                            try {
+                                org.json.JSONObject assistantReply = new org.json.JSONObject()
+                                        .put("role", "assistant")
+                                        .put("content", reply2 == null ? "" : reply2);
+                                if (localConversationHistory != null) {
+                                    localConversationHistory.put(assistantReply); // 将 GPT 回复存入历史
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
                             Consumer<String> h = handleRef.get();
                             if (h != null) h.accept(reply2);
                         }
@@ -640,7 +673,7 @@ public class ChatbotFragment extends Fragment {
                 requireActivity().runOnUiThread(() -> addChatMessage("（空响应）", false));
                 return;
             }
-
+            replyRaw = removeMultipleTokens(replyRaw);
             boolean needRoute   = P_ROUTE_BRACE.matcher(replyRaw).find()   || P_ROUTE_REQ.matcher(replyRaw).find()
                     || P_ROUTE_OLD_BR.matcher(replyRaw).find() || P_ROUTE_OLD_REQ.matcher(replyRaw).find();
             boolean needCertain = P_CERTAIN_BRACE.matcher(replyRaw).find() || P_CERTAIN_REQ.matcher(replyRaw).find();
@@ -720,6 +753,7 @@ public class ChatbotFragment extends Fragment {
             if (needDraw) {
                 handleDrawRequest(dialogForRoute, lastRouteRef, feedRef);
 
+                return;
             }
             // 无任何工具触发：只展示自然语言
         });
@@ -787,6 +821,38 @@ public class ChatbotFragment extends Fragment {
         return v;
     }
 
+    private String removeMultipleTokens(String input) {
+        // 查找第一个有效的令牌
+        Pattern pattern = Pattern.compile("\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|Navigation_API)\\s*\\}");
+        Matcher matcher = pattern.matcher(input);
+
+        if (!matcher.find()) {
+            // 如果没有找到任何令牌，直接返回原始字符串
+            return input;
+        }
+
+        // 获取第一个令牌的完整文本
+        String firstToken = matcher.group();
+
+        // 构建清理后的字符串
+        StringBuffer cleaned = new StringBuffer();
+
+        // 保留第一个令牌，移除所有后续令牌
+        matcher.appendReplacement(cleaned, "FIRST_TOKEN_PLACEHOLDER");
+
+        // 继续处理剩余部分，但不再替换任何令牌
+        while (matcher.find()) {
+            // 对于后续的令牌，不进行替换（即移除它们）
+        }
+        matcher.appendTail(cleaned);
+
+        // 恢复第一个令牌为其原始格式
+        String result = cleaned.toString().replace("FIRST_TOKEN_PLACEHOLDER", firstToken);
+
+        Log.e(TAG, "token=" + result);
+        return result;
+    }
+
 
 
 
@@ -827,6 +893,18 @@ public class ChatbotFragment extends Fragment {
             try {
                 JSONArray poiList = lastCertainListRef.get();
                 JSONObject chosen = null;
+                if(!hascertain){
+                    org.json.JSONArray poiArray;
+                    try {
+                        // ✅ 只用“上一句用户输入”
+                        poiArray = RouteGeneration.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
+                    } catch (Exception ex) {
+                        Log.e(TAG, "Map_API_Certain 调用失败：", ex);
+                        poiArray = new org.json.JSONArray();
+                        poiList=poiArray;
+                    }
+                }else poiList = lastCertainListRef.get();
+
 
                 if (poiList != null && poiList.length() > 0) {
                     String msg = (lastUserMsg == null) ? "" : lastUserMsg;
@@ -893,7 +971,7 @@ public class ChatbotFragment extends Fragment {
                         routeArr.put(o);
                     }
                 }
-                String payloadRoute = "Route generated from {Map_API_Route}\n" + routeArr.toString();
+                String payloadRoute = "Route generated from your request {Map_API_Route}\n" + routeArr.toString()+",now you can call {Drawing_API} if you want to show user the route";
                 java.util.function.Consumer<String> f = feedRef.get();
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
 
@@ -1043,6 +1121,7 @@ public class ChatbotFragment extends Fragment {
     private void handleCertainRequest(String lastUserMsg,
                                       AtomicReference<org.json.JSONArray> lastCertainListRef,
                                       AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        hascertain=true;
         new Thread(() -> {
             try {
                 org.json.JSONArray poiArray;

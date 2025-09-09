@@ -10,6 +10,7 @@ import androidx.annotation.Nullable;
 import com.amap.api.location.AMapLocationClient;
 import com.amap.api.maps.AMap;
 import com.amap.api.maps.CameraUpdateFactory;
+import com.amap.api.maps.model.BitmapDescriptorFactory;
 import com.amap.api.maps.model.LatLng;
 import com.amap.api.maps.model.Marker;
 import com.amap.api.maps.model.MarkerOptions;
@@ -626,7 +627,7 @@ public class WalkFragment extends Fragment {
 
     private SmartGuide.ActionSink sgSink;
     private com.amap.api.maps.model.LatLng lastFix = null;
-    private static final long SG_TICK_MS = 40000L;
+    private static final long SG_TICK_MS = 20000L;
 
     private final Runnable sgTickRunnable = new Runnable() {
         @Override public void run() {
@@ -809,20 +810,52 @@ public class WalkFragment extends Fragment {
     private Marker addOrUpdateMarker(AMap aMap, LatLng pos, String title) {
         String key = String.format(Locale.ROOT, "%.6f,%.6f", pos.latitude, pos.longitude);
         Marker mk = liveMarkers.get(key);
+
         if (mk == null) {
             mk = aMap.addMarker(new MarkerOptions()
                     .position(pos)
                     .title(title == null ? "" : title)
                     .anchor(0.5f, 1.0f)
-                    .zIndex(3000));
+                    .zIndex(3000)
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED)));
             liveMarkers.put(key, mk);
+
+            // 设置自定义信息窗口适配器
+            aMap.setInfoWindowAdapter(new AMap.InfoWindowAdapter() {
+                @Override
+                public View getInfoWindow(Marker marker) {
+                    return null; // 使用默认信息窗口背景
+                }
+
+                @Override
+                public View getInfoContents(Marker marker) {
+                    // 创建自定义布局
+                    View view = LayoutInflater.from(getContext()).inflate(R.layout.custom_info_window, null);
+                    TextView titleTextView = view.findViewById(R.id.info_window_title);
+
+                    // 处理标题中的换行符
+                    String title = marker.getTitle();
+                    if (title != null) {
+                        // 将特定的分隔符替换为换行符
+                        title = title.replace("\\n", "\n");
+                        titleTextView.setText(title);
+                    }
+
+                    return view;
+                }
+            });
         } else {
-            // 刷新标题与位置
+            // 更新标题
             mk.setTitle(title == null ? "" : title);
             mk.setPosition(pos);
         }
+
+        // 显示信息窗口（如果需要一直显示）
+        mk.showInfoWindow();
+
         return mk;
     }
+
 
 
     private void checkHalfwayAndNotify() {
@@ -845,12 +878,12 @@ public class WalkFragment extends Fragment {
     // 用于设置终点事件的函数
     public void checkFinishAndNotify() {
         if (plannedRouteDistanceMeters <= 0) return;
-        stopRunning();
+
 
         // 检查用户是否接近终点（可以设定一个距离阈值）
         if (totalDistance >= plannedRouteDistanceMeters * 0.99) {  // 例如：当接近95%的距离时触发
             if (!isWalking) return; // 如果已经停止，则不再触发
-
+            stopRunning();
             isWalking = false; // 停止计时器
             long endTime = System.currentTimeMillis();
             long duration = (endTime - startTime) / 1000; // 计算总时间，单位秒
