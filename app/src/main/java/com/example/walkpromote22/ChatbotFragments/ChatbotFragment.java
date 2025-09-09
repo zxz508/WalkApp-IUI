@@ -106,6 +106,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -334,9 +335,10 @@ public class ChatbotFragment extends Fragment {
                             "Following are very important:*****" +
                             "When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON (respond {Map_API_Certain} before if user has a clear destination)" +
                             "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain} and API will give you correspond POIs name and locations FROM NEAR TO FAR"+
-                            "When you want to get user's walking data in this week and visualize it to user(Only step counts up to one week are supported),you just respond: {StepData_API}"+
+                            "When you want to get user's walking data in this week respond {StepData_API}, if you need to get the data and visualize it to user as report,you just respond: {StepReport_API}"+
                             "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
                             "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}"+
+
                             "The time now is"+formatted+", and the weather now is"+weather+",the user is at"+userLocation+
                             "You can only use token twice in a row without the user requesting it"+
                             "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
@@ -548,6 +550,7 @@ public class ChatbotFragment extends Fragment {
         final Pattern P_CERTAIN_BRACE = Pattern.compile("\\{\\s*Map_API_Certain\\s*\\}", CI);
         final Pattern P_DRAW_BRACE    = Pattern.compile("\\{\\s*Drawing_API\\s*\\}", CI);
         final Pattern P_STEP_BRACE    = Pattern.compile("\\{\\s*StepData_API\\s*\\}", CI);
+        final Pattern P_STEP_REPORT    = Pattern.compile("\\{\\s*StepReport_API\\s*\\}", CI);
         final Pattern P_HISTORY_BRACE = Pattern.compile("\\{\\s*User_History\\s*\\}", CI);
         final Pattern P_NAV_BRACE     = Pattern.compile("\\{\\s*Navigation_API\\s*\\}", CI);
 
@@ -555,6 +558,7 @@ public class ChatbotFragment extends Fragment {
         final Pattern P_CERTAIN_REQ   = Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Certain\\s*\\}", CI);
         final Pattern P_DRAW_REQ      = Pattern.compile("Request\\s*:\\s*\\{\\s*Drawing_API\\s*\\}", CI);
         final Pattern P_STEP_REQ      = Pattern.compile("Request\\s*:\\s*\\{\\s*StepData_API\\s*\\}", CI);
+        final Pattern P_STEP_REPORT_REQ      = Pattern.compile("Request\\s*:\\s*\\{\\s*StepReport_API\\s*\\}", CI);
         final Pattern P_HISTORY_REQ   = Pattern.compile("Request\\s*:\\s*\\{\\s*User_History\\s*\\}", CI);
         final Pattern P_NAV_REQ       = Pattern.compile("Request\\s*:\\s*\\{\\s*Navigation_API\\s*\\}", CI);
         final Pattern P_ROUTE_OLD_REQ = Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
@@ -681,6 +685,7 @@ public class ChatbotFragment extends Fragment {
             boolean needStep    = P_STEP_BRACE.matcher(replyRaw).find()    || P_STEP_REQ.matcher(replyRaw).find();
             boolean needHistory = P_HISTORY_BRACE.matcher(replyRaw).find() || P_HISTORY_REQ.matcher(replyRaw).find();
             boolean needNav     = P_NAV_BRACE.matcher(replyRaw).find()     || P_NAV_REQ.matcher(replyRaw).find();
+            boolean needStepReport=P_STEP_REPORT.matcher(replyRaw).find()||P_STEP_REPORT_REQ.matcher(replyRaw).find();
 
             String visible = replyRaw;
             visible = P_ROUTE_BRACE.matcher(visible).replaceAll("");
@@ -697,6 +702,7 @@ public class ChatbotFragment extends Fragment {
             visible = P_HISTORY_REQ.matcher(visible).replaceAll("");
             visible = P_NAV_BRACE.matcher(visible).replaceAll("");
             visible = P_NAV_REQ.matcher(visible).replaceAll("");
+            visible = P_STEP_REPORT_REQ.matcher(visible).replaceAll("");
             visible = visible.replaceAll("\\n{3,}", "\n\n").trim();
 
             if (!visible.isEmpty()) {
@@ -718,6 +724,10 @@ public class ChatbotFragment extends Fragment {
             }
             if (needStep) {
                 handleStepRequest(feedRef);
+                return;
+            }
+            if (needStepReport){
+                handleStepReport(feedRef);
                 return;
             }
             if (needNav) {
@@ -982,107 +992,214 @@ public class ChatbotFragment extends Fragment {
             }
         }).start();
     }
+    // 新增一个数据模型类来封装返回的数据
 
-    // StepData_API 的执行：查库 -> 画图 -> 回喂GPT
-    private void handleStepRequest(java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
+
+    // 专门获取数据的方法
+    // 处理步骤报告（读取数据 + 可视化）
+    private void handleStepReport(java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
         new Thread(() -> {
             try {
-                // === 1) 读取用户与数据库 ===
-                String userKey = requireContext()
-                        .getSharedPreferences("user_prefs", android.content.Context.MODE_PRIVATE)
-                        .getString("USER_KEY", null);
-                AppDatabase db   = AppDatabase.getDatabase(getContext());
-                StepDao stepDao  = db.stepDao();
-                UserDao userDao  = db.userDao();
+                // 获取数据
+                StepWeeklyReport report = getStepWeeklyReport();
 
-                // 体重（kg），失败则默认 70kg
-                float weight = 70f;
-                try { weight = userDao.getUserByKey(userKey).getWeight(); } catch (Exception ignore) {}
-
-                // === 2) 计算过去7天（含今天）的日期范围 ===
-                java.util.Calendar cal = java.util.Calendar.getInstance();
-                java.util.Date today   = cal.getTime();
-                cal.add(java.util.Calendar.DAY_OF_YEAR, -6);
-                java.util.Date startDate = cal.getTime();
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault());
-
-                // 有序 Map（保持日期顺序）
-                java.util.LinkedHashMap<String, Integer> stepsMap      = new java.util.LinkedHashMap<>();
-                java.util.LinkedHashMap<String, Float>   distanceMapM  = new java.util.LinkedHashMap<>(); // 米
-                java.util.LinkedHashMap<String, Float>   distanceKmMap = new java.util.LinkedHashMap<>(); // 公里（给图表）
-                java.util.LinkedHashMap<String, Float>   calorieMap    = new java.util.LinkedHashMap<>();
-
-                // === 3) 循环取 7 天数据 ===
-                java.util.Calendar tmp = java.util.Calendar.getInstance();
-                tmp.setTime(startDate);
-                while (!tmp.getTime().after(today)) {
-                    String dateStr = sdf.format(tmp.getTime());
-                    Step stepRecord = stepDao.getStepByDate(userKey, dateStr);
-
-                    int steps = 0;
-                    float distanceM = 0f;
-                    if (stepRecord != null) {
-                        steps = Math.max(0, stepRecord.getStepCount());
-                        distanceM = Math.max(0f, stepRecord.getDistance()); // 米
-                    }
-                    float distanceKm = distanceM / 1000f;
-                    // 卡路里公式（与你给的一致）
-                    float calories = distanceKm * weight * 1.036f;
-
-                    stepsMap.put(dateStr, steps);
-                    distanceMapM.put(dateStr, distanceM);
-                    distanceKmMap.put(dateStr, distanceKm);
-                    calorieMap.put(dateStr, calories);
-
-                    tmp.add(java.util.Calendar.DAY_OF_YEAR, 1);
-                }
-
-                // === 4) 在 UI 线程渲染图表 ===
+                // 在 UI 线程渲染图表
                 requireActivity().runOnUiThread(() -> {
                     try {
-                        // 若 ChartHelper 期望“米”，把 distanceKmMap 换成 distanceMapM
-                        addWeeklyExerciseChart(stepsMap, distanceKmMap, calorieMap);
+                        addWeeklyExerciseChart(report.stepsMap, report.distanceKmMap, report.calorieMap);
                     } catch (Throwable t) {
                         android.util.Log.e(TAG, "addWeeklyExerciseChart failed", t);
                         addChatMessage("图表渲染失败：" + t.getMessage(), false);
                     }
                 });
 
-                // === 5) 回喂 GPT 生成分析（通过你已有的 feedRef） ===
-                try {
-                    org.json.JSONArray days = new org.json.JSONArray();
-                    for (String d : stepsMap.keySet()) {
-                        org.json.JSONObject one = new org.json.JSONObject()
-                                .put("date", d)
-                                .put("steps", stepsMap.get(d))
-                                .put("distance_km", round2(distanceKmMap.get(d)))
-                                .put("calorie_kcal", round1(calorieMap.get(d)));
-                        days.put(one);
-                    }
-                    org.json.JSONObject report = new org.json.JSONObject()
-                            .put("period_start", sdf.format(startDate))
-                            .put("period_end",   sdf.format(today))
-                            .put("weight_kg",    round1(weight))
-                            .put("days",         days);
-
-                    // 避免被“裸 JSON 行”清理规则剔除，加前缀
-                    String payload = "StepData_Report " + report.toString()
-                            + "\n请基于这些数据给出简短中文分析与鼓励（≤100字，避免使用任何 {Map_API_*} 令牌或代码块）。";
-
-                    java.util.function.Consumer<String> feeder = (feedRef != null) ? feedRef.get() : null;
-                    if (feeder != null) feeder.accept(payload);
-
-                } catch (Exception e) {
-                    android.util.Log.e(TAG, "feedRef accept failed", e);
-                }
+                // 生成并发送分析报告
+                sendStepAnalysisReport(report, feedRef);
 
             } catch (Throwable t) {
-                android.util.Log.e(TAG, "handleStepRequest failed", t);
-                requireActivity().runOnUiThread(() ->
-                        addChatMessage("获取运动周报失败：" + t.getMessage(), false));
+                android.util.Log.e(TAG, "handleStepReport failed", t);
+                requireActivity().runOnUiThread(() -> addChatMessage("获取运动周报失败：" + t.getMessage(), false));
             }
         }).start();
     }
+
+    // 只处理步骤数据（读取数据，不进行可视化）
+    private void handleStepData(java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                // 获取数据
+                StepWeeklyReport report = getStepWeeklyReport();
+
+                // 生成并发送分析报告
+                sendStepAnalysisReport(report, feedRef);
+
+            } catch (Throwable t) {
+                android.util.Log.e(TAG, "handleStepData failed", t);
+                requireActivity().runOnUiThread(() -> addChatMessage("获取运动数据失败：" + t.getMessage(), false));
+            }
+        }).start();
+    }
+
+    // 数据模型类
+    private static class StepWeeklyReport {
+        LinkedHashMap<String, Integer> stepsMap;
+        LinkedHashMap<String, Float> distanceKmMap;
+        LinkedHashMap<String, Float> calorieMap;
+        float weight;
+        String periodStart;
+        String periodEnd;
+
+        StepWeeklyReport(LinkedHashMap<String, Integer> stepsMap,
+                         LinkedHashMap<String, Float> distanceKmMap,
+                         LinkedHashMap<String, Float> calorieMap,
+                         float weight, String periodStart, String periodEnd) {
+            this.stepsMap = stepsMap;
+            this.distanceKmMap = distanceKmMap;
+            this.calorieMap = calorieMap;
+            this.weight = weight;
+            this.periodStart = periodStart;
+            this.periodEnd = periodEnd;
+        }
+    }
+
+    // 获取步骤周报数据的通用方法
+    private StepWeeklyReport getStepWeeklyReport() throws Exception {
+        // === 1) 读取用户与数据库 ===
+        String userKey = requireContext()
+                .getSharedPreferences("user_prefs", android.content.Context.MODE_PRIVATE)
+                .getString("USER_KEY", null);
+        AppDatabase db = AppDatabase.getDatabase(getContext());
+        StepDao stepDao = db.stepDao();
+        UserDao userDao = db.userDao();
+
+        // 体重（kg），失败则默认 70kg
+        float weight = 70f;
+        try {
+            weight = userDao.getUserByKey(userKey).getWeight();
+        } catch (Exception ignore) {}
+
+        // === 2) 计算过去7天（含今天）的日期范围 ===
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        java.util.Date today = cal.getTime();
+        cal.add(java.util.Calendar.DAY_OF_YEAR, -6);
+        java.util.Date startDate = cal.getTime();
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault());
+
+        // 有序 Map（保持日期顺序）
+        java.util.LinkedHashMap<String, Integer> stepsMap = new java.util.LinkedHashMap<>();
+        java.util.LinkedHashMap<String, Float> distanceKmMap = new java.util.LinkedHashMap<>(); // 公里
+        java.util.LinkedHashMap<String, Float> calorieMap = new java.util.LinkedHashMap<>();
+
+        // === 3) 循环取 7 天数据 ===
+        java.util.Calendar tmp = java.util.Calendar.getInstance();
+        tmp.setTime(startDate);
+        while (!tmp.getTime().after(today)) {
+            String dateStr = sdf.format(tmp.getTime());
+            Step stepRecord = stepDao.getStepByDate(userKey, dateStr);
+            int steps = 0;
+            float distanceM = 0f;
+            if (stepRecord != null) {
+                steps = Math.max(0, stepRecord.getStepCount());
+                distanceM = Math.max(0f, stepRecord.getDistance()); // 米
+            }
+            float distanceKm = distanceM / 1000f;
+            // 卡路里公式
+            float calories = distanceKm * weight * 1.036f;
+
+            stepsMap.put(dateStr, steps);
+            distanceKmMap.put(dateStr, distanceKm);
+            calorieMap.put(dateStr, calories);
+            tmp.add(java.util.Calendar.DAY_OF_YEAR, 1);
+        }
+
+        return new StepWeeklyReport(stepsMap, distanceKmMap, calorieMap, weight,
+                sdf.format(startDate), sdf.format(today));
+    }
+
+    // 发送步骤分析报告的通用方法
+    private void sendStepAnalysisReport(StepWeeklyReport report,
+                                        java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        try {
+            org.json.JSONArray days = new org.json.JSONArray();
+            for (String d : report.stepsMap.keySet()) {
+                org.json.JSONObject one = new org.json.JSONObject()
+                        .put("date", d)
+                        .put("steps", report.stepsMap.get(d))
+                        .put("distance_km", round2(report.distanceKmMap.get(d)))
+                        .put("calorie_kcal", round1(report.calorieMap.get(d)));
+                days.put(one);
+            }
+
+            org.json.JSONObject jsonReport = new org.json.JSONObject()
+                    .put("period_start", report.periodStart)
+                    .put("period_end", report.periodEnd)
+                    .put("weight_kg", round1(report.weight))
+                    .put("days", days);
+
+            String payload = "StepData_Report " + jsonReport.toString() +
+                    "\n请基于这些数据给出简短中文分析与鼓励（≤100字，避免使用任何 {Map_API_*} 令牌或代码块）。";
+
+            java.util.function.Consumer<String> feeder = (feedRef != null) ? feedRef.get() : null;
+            if (feeder != null) feeder.accept(payload);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "feedRef accept failed", e);
+        }
+    }
+
+
+    // 原方法重构后
+    private void handleStepRequest(java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<String>> feedRef) {
+        new Thread(() -> {
+            try {
+                // 获取数据
+                StepWeeklyReport report = getStepWeeklyReport();
+
+                // === 4) 在 UI 线程渲染图表 ===
+                requireActivity().runOnUiThread(() -> {
+                    try {
+                        addWeeklyExerciseChart(report.stepsMap, report.distanceKmMap, report.calorieMap);
+                    } catch (Throwable t) {
+                        android.util.Log.e(TAG, "addWeeklyExerciseChart failed", t);
+                        addChatMessage("图表渲染失败：" + t.getMessage(), false);
+                    }
+                });
+
+                // === 5) 回喂 GPT 生成分析 ===
+                try {
+                    org.json.JSONArray days = new org.json.JSONArray();
+                    for (String d : report.stepsMap.keySet()) {
+                        org.json.JSONObject one = new org.json.JSONObject()
+                                .put("date", d)
+                                .put("steps", report.stepsMap.get(d))
+                                .put("distance_km", round2(report.distanceKmMap.get(d)))
+                                .put("calorie_kcal", round1(report.calorieMap.get(d)));
+                        days.put(one);
+                    }
+
+                    org.json.JSONObject jsonReport = new org.json.JSONObject()
+                            .put("period_start", report.periodStart)
+                            .put("period_end", report.periodEnd)
+                            .put("weight_kg", round1(report.weight))
+                            .put("days", days);
+
+                    String payload = "StepData_Report " + jsonReport.toString() +
+                            "\n请基于这些数据给出简短中文分析与鼓励（≤100字，避免使用任何 {Map_API_*} 令牌或代码块）。";
+
+                    java.util.function.Consumer<String> feeder = (feedRef != null) ? feedRef.get() : null;
+                    if (feeder != null) feeder.accept(payload);
+                } catch (Exception e) {
+                    android.util.Log.e(TAG, "feedRef accept failed", e);
+                }
+            } catch (Throwable t) {
+                android.util.Log.e(TAG, "handleStepRequest failed", t);
+                requireActivity().runOnUiThread(() -> addChatMessage("获取运动周报失败：" + t.getMessage(), false));
+            }
+        }).start();
+    }
+
+
+
+
 
     private static float round1(float v) { return Math.round(v * 10f) / 10f; }
     private static float round2(float v) { return Math.round(v * 100f) / 100f; }
@@ -1361,7 +1478,7 @@ public class ChatbotFragment extends Fragment {
     private void addBotRouteMessage(List<List<Location>> routes) throws Exception {
         List<List<Location>> ordered_routes = rank(routes);
 
-        // 取排序后第 1 条作为“最优路线”用于上传
+        // 取排序后第 1 条作为"最优路线"用于上传
         if (ordered_routes != null && !ordered_routes.isEmpty()) {
             lastRouteForUpload = new java.util.ArrayList<>(ordered_routes.get(0));
             lastRouteNameForUpload = buildRouteName(ordered_routes.get(0));
@@ -1376,7 +1493,7 @@ public class ChatbotFragment extends Fragment {
         int mapH = (int) (150 * getResources().getDisplayMetrics().density);
 
         for (int i = 0; i < Math.min(ordered_routes.size(), 3); i++) {
-            List<Location> route = ordered_routes.get(i);
+            final List<Location> route = ordered_routes.get(i);
 
             /* ——— Shell ——— */
             RelativeLayout card = new RelativeLayout(getContext());
@@ -1391,11 +1508,6 @@ public class ChatbotFragment extends Fragment {
             mapView.onCreate();
             mapView.onResume(); // ✅ 确保地图渲染
 
-            List<LatLng> latLngs = new ArrayList<>();
-            for (Location l : route)
-                latLngs.add(new LatLng(l.getLatitude(), l.getLongitude()));
-
-            mapView.drawRoute(latLngs, Color.parseColor("#FF4081"));
             card.addView(mapView);
 
             /* ——— Distance chip ——— */
@@ -1423,6 +1535,21 @@ public class ChatbotFragment extends Fragment {
             mapView.postDelayed(() -> {
                 AMap aMap = mapView.getMapView() != null ? mapView.getMapView().getMap() : null;
                 if (aMap == null) return;
+
+                // 构建 LatLng 列表并检查 null
+                List<LatLng> latLngs = new ArrayList<>();
+                for (Location l : route) {
+                    if (l != null) {
+                        latLngs.add(new LatLng(l.getLatitude(), l.getLongitude()));
+                    }
+                }
+
+                // 调用 drawRoute 绘制路线
+                try {
+                    mapView.drawRoute(latLngs, Color.parseColor("#FF4081"));
+                } catch (Exception e) {
+                    Log.e(TAG, "drawRoute error: " + e.getMessage(), e);
+                }
 
                 aMap.showMapText(false);
 
@@ -1483,10 +1610,13 @@ public class ChatbotFragment extends Fragment {
                 });
                 pool.shutdown();
 
-                LatLng center = MapTool.calculateCenter(latLngs);
-                float zoomLevel = getZoomLevel(route);
-                aMap.animateCamera(CameraUpdateFactory.newCameraPosition(
-                        new CameraPosition.Builder().target(center).zoom(zoomLevel).tilt(30f).build()));
+                // 计算中心点和缩放级别
+                if (!latLngs.isEmpty()) {
+                    LatLng center = MapTool.calculateCenter(latLngs);
+                    float zoomLevel = getZoomLevel(route);
+                    aMap.animateCamera(CameraUpdateFactory.newCameraPosition(
+                            new CameraPosition.Builder().target(center).zoom(zoomLevel).tilt(30f).build()));
+                }
 
                 aMap.getUiSettings().setAllGesturesEnabled(false);
             }, 200);

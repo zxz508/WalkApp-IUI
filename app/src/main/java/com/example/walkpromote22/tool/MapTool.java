@@ -462,7 +462,7 @@ public class MapTool extends LinearLayout {
                         lastCameraCenter = currentCenter;
                         lastCenterUpdateTime = System.currentTimeMillis();
                     } else {
-                        if (System.currentTimeMillis() - lastCenterUpdateTime >= 5000) {
+                        if (System.currentTimeMillis() - lastCenterUpdateTime >= 10000) {
                             trackingPaused = false; // 恢复追踪
                         }
                     }

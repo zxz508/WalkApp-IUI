@@ -634,6 +634,11 @@ public class RouteGenAgent implements Agent {
             // 检查 POIs 是否为空
             if (pois == null || pois.length() == 0) {
                 Log.d("POI Debug", "No POIs found in this cell.");
+                gridCell.tags = new JSONArray();
+                String tag = "Extremely dangerous";
+                // 将这个 String 添加到 JSONArray 中
+                gridCell.tags.put(tag);
+
                 continue; // 跳过没有 POI 的格子
             } else {
                 Log.d("POI Debug", "Found " + pois.length() + " POIs to process.");
