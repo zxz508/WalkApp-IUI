@@ -1,7 +1,8 @@
 pluginManagement {
     repositories {
-        google(); mavenCentral(); gradlePluginPortal()
-
+        google()
+        mavenCentral()
+        gradlePluginPortal()
         // —— 仅存放 AMap 相关产物
         maven("https://maven.amap.com/repository/releases") {
             // 关键 ❶：显式只允许 AMap 自己的 group

@@ -36,6 +36,11 @@ import com.amap.api.maps.model.Polyline;
 import com.amap.api.maps.model.PolylineOptions;
 import com.amap.api.services.core.AMapException;
 import com.amap.api.services.core.LatLonPoint;
+import com.amap.api.services.route.BusPath;
+import com.amap.api.services.route.BusRouteResult;
+import com.amap.api.services.route.BusStep;
+import com.amap.api.services.route.DriveRouteResult;
+import com.amap.api.services.route.RideRouteResult;
 import com.amap.api.services.route.RouteSearch;
 import com.amap.api.services.route.RouteSearch.WalkRouteQuery;
 import com.amap.api.services.route.WalkRouteResult;
@@ -47,9 +52,12 @@ import com.example.walkpromote22.data.database.AppDatabase;
 import com.example.walkpromote22.data.model.Location;
 
 
+import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -61,6 +69,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 /**
  * MapContainerView 实现两种功能：
@@ -145,6 +157,13 @@ public class MapTool extends LinearLayout {
         }
         aMap.getUiSettings().setZoomControlsEnabled(false);
         aMap.getUiSettings().setZoomGesturesEnabled(true);
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(context, "缺少定位权限，请在设置中开启。", Toast.LENGTH_LONG).show()
+            );
+            return; // 直接返回，避免继续调 SDK 报 SecurityException
+        }
 
         // 3) 提前创建用于“实时轨迹/导航轨迹”的 Polyline（避免定位刚到来时 NPE）
         if (NavigateLine == null) {
@@ -654,6 +673,7 @@ public class MapTool extends LinearLayout {
 
                             // 回写给 destinRoute，供你的“虚线吸附到路线最近点”逻辑使用
                             destinRoute = full;
+
                         }
                     }
 
@@ -666,6 +686,144 @@ public class MapTool extends LinearLayout {
             }
         });
     }
+    public void drawBusRoute(final LatLng start, final LatLng busEnd, final List<LatLng> locations, int color, String apiKey, String city) {
+        if (start == null || busEnd == null || locations == null || locations.size() < 1) {
+            Toast.makeText(getContext(), "需要有效的起点、公交终点和步行路径", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 1. 获取公交路线 JSON 数据
+        String origin = start.longitude + "," + start.latitude;
+        String destination = busEnd.longitude + "," + busEnd.latitude;
+
+        // 异步请求公交路线数据
+        new Thread(() -> {
+            String jsonData = getBusRouteJson(origin, destination, city, apiKey);
+            if (jsonData != null) {
+                // 2. 解析公交路线 JSON 数据
+                List<LatLng> busRoute = new ArrayList<>();
+                parseBusRouteJson(jsonData);
+
+                // 3. 获取步行路径的 JSON 数据（从公交终点到步行终点）
+                String walkStart = busEnd.longitude + "," + busEnd.latitude;
+                String walkEnd = locations.get(locations.size() - 1).longitude + "," + locations.get(locations.size() - 1).latitude;
+
+                String walkJsonData = getBusRouteJson(walkStart, walkEnd, city, apiKey);
+                if (walkJsonData != null) {
+                    // 解析步行路径
+                    List<LatLng> walkRoute = new ArrayList<>();
+                    parseBusRouteJson(walkJsonData);
+
+                    // 4. 拼接公交路径和步行路径
+                    List<LatLng> fullRoute = new ArrayList<>();
+                    fullRoute.addAll(busRoute); // 加入公交路径
+                    fullRoute.addAll(walkRoute); // 加入步行路径
+
+                        // 清理旧的规划线（如果有）
+                        if (planPolyline != null) {
+                            try {
+                                planPolyline.remove();
+                            } catch (Throwable ignore) {}
+                            planPolyline = null;
+                        }
+
+                        // 绘制公交 + 步行路线
+                        planPolyline = aMap.addPolyline(new PolylineOptions()
+                                .addAll(fullRoute)
+                                .width(10)
+                                .color(color)
+                                .geodesic(true)
+                                .zIndex(1f));
+
+                        destinRoute = fullRoute; // 供“虚线吸附到路线最近点”逻辑使用
+
+                }
+            }
+        }).start();
+    }
+
+    public String getBusRouteJson(String origin, String destination, String city, String apiKey) {
+        OkHttpClient client = new OkHttpClient();
+
+        String url = "https://restapi.amap.com/v3/direction/transit?"
+                + "origin=" + origin // 起点坐标
+                + "&destination=" + destination // 终点坐标
+                + "&city=" + city // 城市名称
+                + "&key=" + apiKey; // 高德 API key
+
+        Request request = new Request.Builder().url(url).build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.isSuccessful()) {
+                assert response.body() != null;
+                return response.body().string(); // 返回原始 JSON 字符串
+            } else {
+                return "Request failed";
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            return "Error occurred";
+        }
+    }
+    public void parseBusRouteJson(String jsonData) {
+        try {
+            JSONObject jsonObject = new JSONObject(jsonData);
+            JSONObject route = jsonObject.getJSONObject("route");
+
+            // 获取 transit 数据
+            JSONArray transits = route.getJSONArray("transits");
+
+            for (int i = 0; i < transits.length(); i++) {
+                JSONObject transit = transits.getJSONObject(i);
+
+                // 获取 segments 数据
+                JSONArray segments = transit.getJSONArray("segments");
+
+                for (int j = 0; j < segments.length(); j++) {
+                    JSONObject segment = segments.getJSONObject(j);
+
+                    // 解析公交线路信息
+                    if (segment.has("bus")) {
+                        JSONObject bus = segment.getJSONObject("bus");
+                        JSONArray buslines = bus.getJSONArray("buslines");
+
+                        for (int k = 0; k < buslines.length(); k++) {
+                            JSONObject busline = buslines.getJSONObject(k);
+                            String busName = busline.getString("name");
+                            String polyline = busline.getString("polyline");
+                            System.out.println("Bus Line: " + busName);
+                            System.out.println("Polyline: " + polyline);
+                        }
+                    }
+
+                    // 解析步行信息
+                    if (segment.has("walking")) {
+                        JSONObject walking = segment.getJSONObject("walking");
+                        String walkingPolyline = walking.getString("polyline");
+                        System.out.println("Walking Polyline: " + walkingPolyline);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
+
+    private List<LatLng> decodePolyline(String polylineStr) {
+        List<LatLng> result = new ArrayList<>();
+        String[] points = polylineStr.split(";");
+        for (String point : points) {
+            String[] latLon = point.split(",");
+            double lat = Double.parseDouble(latLon[1]);
+            double lon = Double.parseDouble(latLon[0]);
+            result.add(new LatLng(lat, lon));
+        }
+        return result;
+    }
+
+
 
 
 

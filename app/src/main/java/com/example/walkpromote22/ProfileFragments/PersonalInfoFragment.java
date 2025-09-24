@@ -218,8 +218,8 @@ public class PersonalInfoFragment extends Fragment {
                 User user = userDao.getUserByKey(userKey);
                 if (user != null) {
                     requireActivity().runOnUiThread(() -> {
-                        etHeight.setText(user.getHeight() > 0 ? String.valueOf(user.getHeight()) : "");
-                        etWeight.setText(user.getWeight() > 0 ? String.valueOf(user.getWeight()) : "");
+                        etHeight.setText(user.getHeight() > 0 ? String.valueOf(user.getHeight()) : "10");
+                        etWeight.setText(user.getWeight() > 0 ? String.valueOf(user.getWeight()) : "10");
                         // 重置 NumberPicker 为默认值（当前年份-30、1月、1日）
                         npYear.setValue(currentYear - 30);
                         npMonth.setValue(1);
@@ -234,7 +234,7 @@ public class PersonalInfoFragment extends Fragment {
                             btnFemale.setSelected(true);
                             btnMale.setSelected(false);
                         } else {
-                            gender = "";
+                            gender = "Male";
                             btnMale.setSelected(false);
                             btnFemale.setSelected(false);
                         }

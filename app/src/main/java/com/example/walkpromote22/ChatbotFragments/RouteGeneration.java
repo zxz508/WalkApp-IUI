@@ -5,6 +5,7 @@ package com.example.walkpromote22.ChatbotFragments;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -19,11 +20,14 @@ import com.example.walkpromote22.data.model.Location;
 import com.example.walkpromote22.data.model.POI;
 
 import com.example.walkpromote22.data.model.PoiAreaCoverage;
+import com.example.walkpromote22.data.model.Route;
 import com.example.walkpromote22.tool.MapTool;
+import com.example.walkpromote22.tool.UserPreferences;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -37,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,11 +50,17 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.zip.GZIPInputStream;
 
 
@@ -131,7 +142,7 @@ public class RouteGeneration {
     /* =========================================================
      *  7. 核心入口
      * ========================================================= */
-  /*  public static List<Location> generateRoute(@NonNull Context ctx,
+    public static List<Location> generateRoute(@NonNull Context ctx,
                                                @NonNull String userUtter) throws Exception {
 
         Log.e(TAG, "1");
@@ -172,23 +183,201 @@ public class RouteGeneration {
         }
 
         // 计算总距离（直线方式）
-        distanceOfRoute = computeAccurateDistance(sel.waypoints);
         Log.d("Route", "Total distance (waypoints only): " + distanceOfRoute + " meters");
 
         return result;
-    }*/
+    }
 
 
-    public static JSONArray getCoreLocationsFromRequirement(@NonNull Context ctx, String requirment) throws JSONException {
+    public static JSONArray getInterestingPoint(@NonNull Context ctx, String requirement)  throws JSONException {
         final String TAG = "CoreLoc"; // 本方法专用 Tag，避免与全局 TAG 混淆
-        final String trace = "trace=" + java.util.UUID.randomUUID().toString().substring(0, 8);
+        final String trace = "trace=" + UUID.randomUUID().toString().substring(0, 8);
+        final long t0 = System.currentTimeMillis();
+        String payloadHistory = "";
+        try {
+            UserPreferences userPref = new UserPreferences(ctx);
+            String userKey=userPref.getUserKey();
+            List<Route> historyRoutes = AppDatabase.getDatabase(ctx).routeDao().getRoutesByUserKey(userKey);
+            JSONArray historyArr = new JSONArray();
+            int i = 0;
+            for (Route r : historyRoutes) {
+                i++;
+                if (i >= 10) break;
+                JSONObject obj = new JSONObject();
+                obj.put("id", r.getId());
+                obj.put("name", r.getName());
+                obj.put("createdAt", r.getCreatedAt());
+                obj.put("description", r.getDescription());
+                historyArr.put(obj);
+            }
+             payloadHistory = "API_Result:{User_History}\n" + historyArr.toString();
+
+
+        } catch (Exception e) {
+            Log.e("tag","getInterestingPoint获取历史失败");
+        }
+        // 小工具：日志脱敏 & 截断
+        Function<String, String> redactKey = (u) ->
+                u == null ? "null" : u.replaceAll("([?&]key=)[^&]+", "$1***");
+        BiFunction<String, Integer, String> cut = (s, n) -> {
+            if (s == null) return "null";
+            s = s.replaceAll("\\s+", " ").trim();
+            return s.length() > n ? s.substring(0, n) + "…" : s;
+        };
+
+        // ---------------- 0) 位置初始化 ----------------
+        getUserLocation(ctx);
+        final Double originLat = location != null ? location.latitude : null;
+        final Double originLng = location != null ? location.longitude : null;
+
+
+        assert location != null;
+        fetchPOIs(ctx,location,5000);
+
+        // ---------------- 1) system + few-shot ----------------
+        final long tSys0 = System.currentTimeMillis();
+        String sysPrompt =
+                "你是一个POI挑选助手，你只能回复我{***}的格式，下面时具体要求：" +
+                        "你会接收到一个POI表格和用户完整input和用户历史请求偏好，从POI表格中根据用户input分析有哪些是用户可能感兴趣的点，" +
+                        "请返回如下格式[\n" +
+                        "用户当前位置在"+originLat+","+originLng+
+                        "  {\n" +
+                        "    \"name\": \"Park\",\n" +
+                        "    \"latitude\": 40.748817,\n" +
+                        "    \"longitude\": -73.985428\n" +
+                        "  },\n" +
+                        "  {\n" +
+                        "    \"name\": \"Museum\",\n" +
+                        "    \"latitude\": 34.052235,\n" +
+                        "    \"longitude\": -118.243683\n" +
+                        "  }\n" +
+                        "]" +
+                        "如公园、绿道、商场、湖泊等等有优先级,距离用户更近的有优先级。用户历史请求中的偏好地点有优先级";
+
+
+
+
+        JSONArray hist = new JSONArray()
+                .put(new JSONObject().put("role", "system").put("content", sysPrompt))
+                .put(new JSONObject().put("content", "history").put("content", payloadHistory));
+
+        hist = prependTranscript(hist, safeGetTranscript());
+
+
+
+
+        // ---------------- 2) LLM 请求 ----------------
+        final String[] reply = new String[1];
+        final String[] errMsg = new String[1];
+
+        CountDownLatch latch = new CountDownLatch(1);
+        ChatbotHelper helper = new ChatbotHelper();
+        Log.e(TAG, "Finding request="+requirement );
+        helper.sendMessage(requirement == null ? "" : requirement, hist, new ChatbotResponseListener() {
+            @Override public void onResponse(String r) {
+                reply[0] = r;
+                Log.e(TAG,"兴趣列表poi="+r);
+                latch.countDown();
+            }
+            @Override public void onFailure(String e) {
+                errMsg[0] = e;
+                Log.e(TAG, trace + " LLM_onFailure err=" + e);
+                latch.countDown();
+            }
+        });
+
+        try {
+            boolean ok = latch.await(100, TimeUnit.SECONDS);
+            if (!ok) {
+                Log.e(TAG, trace + " LLM_TIMEOUT wait=100s");
+                throw new JSONException("TIMEOUT_WAITING_GPT");
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            Log.e(TAG, trace + " LLM_INTERRUPTED " + ie);
+            throw new JSONException("INTERRUPTED_WAITING_GPT");
+        }
+        if (reply[0] == null) {
+            Log.e(TAG, trace + " LLM_NULL_REPLY err=" + errMsg[0]);
+            throw new JSONException("GPT_RESPONSE_NULL");
+        }
+        final long tLlm1 = System.currentTimeMillis();
+
+        // ---------------- 3) 解析 {A,B,...} ----------------
+
+
+        return toLocations(reply[0]);
+    }
+
+    public static JSONArray toLocations(String r) throws JSONException {
+        // 空与清理
+        if (r == null) return new JSONArray();
+        String s = r.trim();
+        if (s.isEmpty()) return new JSONArray();
+        if (s.charAt(0) == '\uFEFF') s = s.substring(1);               // 去BOM
+        // 若整体被引号包住（数组被当成字符串），去引号并反转义
+        if ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'"))) {
+            s = s.substring(1, s.length() - 1);
+            s = s.replace("\\\"", "\"").replace("\\'", "'");
+        }
+        // 抠出真正的 [ ... ] 片段（容忍外层噪声/括号）
+        int l = s.indexOf('['), rgt = s.lastIndexOf(']');
+        if (l >= 0 && rgt > l) s = s.substring(l, rgt + 1);
+
+        // 解析成 JSONArray；若失败则尝试单对象包成数组；仍失败则给空数组
+        JSONArray arr;
+        try {
+            arr = new JSONArray(s);
+        } catch (Exception e) {
+            try {
+                arr = new JSONArray().put(new JSONObject(s));
+            } catch (Exception e2) {
+                return new JSONArray();
+            }
+        }
+
+        // 仅提取 name / latitude / longitude，并做数值兜底
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < arr.length(); i++) {
+            Object it = arr.opt(i);
+            if (!(it instanceof JSONObject)) continue;
+            JSONObject src = (JSONObject) it;
+
+            String name = src.optString("name", "");
+            Object latV = src.opt("latitude");
+            Object lngV = src.opt("longitude");
+            double lat = (latV instanceof Number) ? ((Number) latV).doubleValue() :
+                    (latV != null ? parseDoubleSafe(String.valueOf(latV)) : Double.NaN);
+            double lng = (lngV instanceof Number) ? ((Number) lngV).doubleValue() :
+                    (lngV != null ? parseDoubleSafe(String.valueOf(lngV)) : Double.NaN);
+
+            if (!Double.isNaN(lat) && !Double.isNaN(lng)) {
+                JSONObject o = new JSONObject();
+                o.put("name", name);
+                o.put("latitude", lat);
+                o.put("longitude", lng);
+                out.put(o);
+            }
+        }
+        return out;
+    }
+
+    // 仅为上面的方法服务的内联式小函数（仍在同一处，保持“一个方法块”的简洁使用体验）
+    private static double parseDoubleSafe(String s) {
+        try { return Double.parseDouble(s.trim()); } catch (Exception e) { return Double.NaN; }
+    }
+
+
+    public static JSONArray getCoreLocationsFromRequirement(@NonNull Context ctx, String requirement) throws JSONException {
+        final String TAG = "CoreLoc"; // 本方法专用 Tag，避免与全局 TAG 混淆
+        final String trace = "trace=" + UUID.randomUUID().toString().substring(0, 8);
         final long t0 = System.currentTimeMillis();
 
 
         // 小工具：日志脱敏 & 截断
-        java.util.function.Function<String, String> redactKey = (u) ->
+        Function<String, String> redactKey = (u) ->
                 u == null ? "null" : u.replaceAll("([?&]key=)[^&]+", "$1***");
-        java.util.function.BiFunction<String, Integer, String> cut = (s, n) -> {
+        BiFunction<String, Integer, String> cut = (s, n) -> {
             if (s == null) return "null";
             s = s.replaceAll("\\s+", " ").trim();
             return s.length() > n ? s.substring(0, n) + "…" : s;
@@ -241,8 +430,8 @@ public class RouteGeneration {
         final long tLlm0 = System.currentTimeMillis();
         CountDownLatch latch = new CountDownLatch(1);
         ChatbotHelper helper = new ChatbotHelper();
-        Log.e(TAG, "Finding request="+requirment );
-        helper.sendMessage(requirment == null ? "" : requirment, hist, new ChatbotResponseListener() {
+        Log.e(TAG, "Finding request="+requirement );
+        helper.sendMessage(requirement == null ? "" : requirement, hist, new ChatbotResponseListener() {
             @Override public void onResponse(String r) {
                 reply[0] = r;
                Log.e(TAG,"地名提取agent提取结果="+r);
@@ -256,7 +445,7 @@ public class RouteGeneration {
         });
 
         try {
-            boolean ok = latch.await(100, java.util.concurrent.TimeUnit.SECONDS);
+            boolean ok = latch.await(100, TimeUnit.SECONDS);
             if (!ok) {
                 Log.e(TAG, trace + " LLM_TIMEOUT wait=100s");
                 throw new JSONException("TIMEOUT_WAITING_GPT");
@@ -289,7 +478,7 @@ public class RouteGeneration {
         }
 
         String[] toks = inner.split("[,，、;；\\s]+");
-        java.util.LinkedHashSet<String> nameSet = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> nameSet = new LinkedHashSet<>();
         for (String t : toks) {
             if (t == null) continue;
             String name = t.trim();
@@ -307,17 +496,17 @@ public class RouteGeneration {
 
         // ---------------- 4) AMap 检索 ----------------
         final long tApi0 = System.currentTimeMillis();
-        java.util.List<Location> out = new java.util.ArrayList<>();
-        java.util.Set<String> dedup = new java.util.HashSet<>();
+        List<Location> out = new ArrayList<>();
+        Set<String> dedup = new HashSet<>();
         final int RADIUS_M = 5000;
         final int PAGE_SZ = 25;
         final int MAX_PAGES = 5;
 
-        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger(0);
-        java.util.concurrent.atomic.AtomicInteger pagesOk = new java.util.concurrent.atomic.AtomicInteger(0);
-        java.util.concurrent.atomic.AtomicInteger poisTotal = new java.util.concurrent.atomic.AtomicInteger(0);
+        AtomicInteger calls = new AtomicInteger(0);
+        AtomicInteger pagesOk = new AtomicInteger(0);
+        AtomicInteger poisTotal = new AtomicInteger(0);
 
-        java.util.function.BiFunction<String, Boolean, Integer> runQuery = (kw, useAround) -> {
+        BiFunction<String, Boolean, Integer> runQuery = (kw, useAround) -> {
             int added = 0;
             for (int page = 1; page <= MAX_PAGES; page++) {
                 String url;
@@ -326,13 +515,13 @@ public class RouteGeneration {
                         url = "https://restapi.amap.com/v3/place/around"
                                 + "?location=" + originLng + "," + originLat
                                 + "&radius=" + RADIUS_M
-                                + "&keywords=" + java.net.URLEncoder.encode(kw, "UTF-8")
+                                + "&keywords=" + URLEncoder.encode(kw, "UTF-8")
                                 + "&sortrule=distance&output=json&extensions=base"
                                 + "&offset=" + PAGE_SZ + "&page=" + page
                                 + "&key=" + AMAP_KEY;
                     } else {
                         url = "https://restapi.amap.com/v3/place/text"
-                                + "?keywords=" + java.net.URLEncoder.encode(kw, "UTF-8")
+                                + "?keywords=" + URLEncoder.encode(kw, "UTF-8")
                                 + "&citylimit=false&output=json&extensions=base"
                                 + "&offset=" + PAGE_SZ + "&page=" + page
                                 + "&key=" + AMAP_KEY;
@@ -424,7 +613,7 @@ public class RouteGeneration {
 
         if (originLat != null && originLng != null) {
             try {
-                out.sort(java.util.Comparator.comparingDouble(
+                out.sort(Comparator.comparingDouble(
                         L -> MapTool.distanceBetween(
                                 new LatLng(originLat, originLng),
                                 new LatLng(L.getLatitude(), L.getLongitude())
@@ -476,31 +665,25 @@ public class RouteGeneration {
 
 
     // ====== 多代理 Planner（Gen → Selector），最终仍输出 SelectedRoute ======
-   /* private static SelectedRoute chooseWaypointsWithGPT(String userUtter)
+    private static SelectedRoute chooseWaypointsWithGPT(String userUtter)
             throws Exception {
 
         String sysPrompt =
-                "你是一名步行路线规划助手，收到用户需求和附近地点列表返回一个JSON。规则如下请遵守" +
-                        "1.JSON的结构示例：{\"waypoints\":[{\"name\":\"\",\"lat\":0,\"lng\":0},...]}" +
-                        "2.请根据用户需求和地点列表的经纬度来设计一个路线（排在前面的视为先前往)，每个相邻途径点之间的距离不要太远" +
-                        "3.如果用户没有明确目的地且意图仅仅是在附近散步，请让终点接近起点。" +
-                        "4.如果用户没有明确的起点，那默认起点为用户当前位置:" + location + "如果用户指定了起点则用其作为起点" +
-                        "5.****如果用户指定了终点，则直接返回起点，终点两个地点组成的json（如果还指定了途径点，请加在中间。如果没有指定途径点就绝对不要添加多余的途径点)****" +
-                        "6.请根据传输给你的经纬度计算大致的总路线长度，确保整个路线的长度不要太短（2-3公里比较合适），路线不要太曲折（经纬的变化是有规律的）。" +
-                        "7.若包含“避开人多/想安静”等词，也请在选点时考虑如何能实现用户的需求。" +
-                        "请必须返回且仅返回一个要求的JSON结构并仔细阅读下面全部的POI列表,越靠前的POI距离用户当前位置越近。" +
-                        "JSON的结构示例：{\"waypoints\":[{\"name\":\"\",\"lat\":0,\"lng\":0},...]}";
+                "你是一名步行路线规划助手，收到用户需求和用户可能要去的地点列表（地点数量可能是1到多个）以及一个TrafficEvent" +
+                        "1.JSON的结构示例：[{\"waypoints\":[{\"name\":\"\",\"lat\":0,\"lng\":0},...]}]" +
+                        "2.如果用户没有明确的起点，那默认起点为用户当前位置:" + location + "如果用户指定了起点则用其作为起点" +
+                        "3.请根据用户需求和地点列表直接返回上述结构的json路线" +
+                        "4.如果用户没有明确哪个地点是终点哪个地点是途径点，则默认举例用户近到远排序"+
+                        "5.尽量避开trafficEvent";
 
 
 
         // === 真实 payload：加入事件/天气等（保留你原先的 fetchTrafficEventsOnce）===
         JSONArray eventInfo = fetchTrafficEventsOnce(location, 3000);
-        int halfSideMeters = 3000, tileSizeMeters = (int) Math.floor(halfSideMeters / Math.sqrt(7));
-        int perTileMax = 200, globalMax = 1200;
-        JSONArray nearbyPOIs= fetchPOIs(location, halfSideMeters, tileSizeMeters, perTileMax, globalMax);
+
         JSONObject payload = new JSONObject()
+                .put("Assistant",sysPrompt)
                 .put("user_request", userUtter)
-                .put("nearby_pois", nearbyPOIs)
                 .put("event_info", eventInfo);
 
         Log.e(TAG, "发给gpt的内容如下：" + payload);
@@ -508,15 +691,6 @@ public class RouteGeneration {
         // === 组装对话历史：system -> few-shot -> real user（保留你的原顺序）===
         ChatbotHelper helper = new ChatbotHelper();
         JSONArray hist = new JSONArray()
-                .put(new JSONObject().put("role", "system").put("content",
-                        sysPrompt + "\n参考下面的示例输入输出对，严格按照相同的 JSON 结构返回结果。"))
-                // Few-shot（示例输入/输出）
-                .put(new JSONObject().put("role", "user").put("content", "I wanna walk around my apartment"))
-                .put(new JSONObject().put("role", "assistant").put("content", buildSuccessExampleAnswer()))
-                // 你原来的第二组 few-shot
-                .put(new JSONObject().put("role", "user").put("content", "I wanna walk to a park"))
-                .put(new JSONObject().put("role", "assistant").put("content", buildSuccessExampleAnswer2()))
-                // 真实请求（只把 JSON 作为 user）
                 .put(new JSONObject().put("role", "user").put("content", payload.toString()));
 
         // === 新增：把 ChatbotFragment 的完整对话历史当作 system 插到最前（若你已实现 provider）===
@@ -539,9 +713,35 @@ public class RouteGeneration {
 
         // === 解析仅包含 waypoints 的 JSON（保留你原本的解析流程，不使用 parseSelectedRoute）===
         Log.e(TAG, reply[0]);
-        String cleaned = extractBalancedJson(stripCodeFence(reply[0]));
-        JSONObject res = new JSONObject(cleaned);
-        response = cleaned;
+        String raw = reply[0];
+        String stripped = stripCodeFence(raw);
+        String cleaned = extractBalancedJson(stripped);
+
+// 用 JSONTokener 先探测顶层类型
+        Object top = new JSONTokener(cleaned).nextValue();
+        JSONObject res;
+
+        if (top instanceof JSONObject) {
+            res = (JSONObject) top;
+        } else if (top instanceof JSONArray) {
+            // 顶层是数组，按你的协议把它当成 waypoints 数组包一层
+            res = new JSONObject().put("waypoints", (JSONArray) top);
+        } else if (top instanceof String) {
+            // 顶层还是字符串，再尝试二次反序列化
+            Object top2 = new JSONTokener((String) top).nextValue();
+            if (top2 instanceof JSONObject) {
+                res = (JSONObject) top2;
+            } else if (top2 instanceof JSONArray) {
+                res = new JSONObject().put("waypoints", (JSONArray) top2);
+            } else {
+                throw new JSONException("无法从回复中解析出有效的 JSON 对象或数组");
+            }
+        } else {
+            throw new JSONException("无法从回复中解析出有效的 JSON");
+        }
+
+        response = (cleaned != null ? cleaned : raw);
+
 
         JSONArray wpArr = res.optJSONArray("waypoints");
         if (wpArr == null || wpArr.length() == 0) return null;
@@ -556,7 +756,119 @@ public class RouteGeneration {
         }
         return new SelectedRoute(wps, names);
     }
-*/
+
+    private static String stripCodeFence(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+
+        // 形如 ```json ... ``` 或 ``` ... ```
+        if (t.startsWith("```")) {
+            int firstNl = t.indexOf('\n');
+            if (firstNl > 0) {
+                // 跳过第一行的 ``` 或 ```json
+                String body = t.substring(firstNl + 1);
+                int fence = body.lastIndexOf("```");
+                if (fence >= 0) {
+                    return body.substring(0, fence).trim();
+                }
+            }
+            // 不规范但以 ``` 开头，尽量去掉首行的 ```
+            t = t.replaceFirst("^```[a-zA-Z0-9_-]*\\s*", "");
+            t = t.replaceFirst("\\s*```\\s*$", "");
+            return t.trim();
+        }
+        return t;
+    }
+
+    /**
+     * 从任意字符串中“抠出”首个平衡的 JSON（对象或数组）。
+     * - 优先找第一个 '{' 或 '['（谁先出现用谁）
+     * - 用栈深度法匹配到成对的 '}' 或 ']'
+     * - 忽略字符串字面量中的括号（处理转义字符）
+     * - 若整体是被引号包住的 JSON 字符串，则先反转义后再尝试
+     * 失败则返回原串的 trim。
+     */
+    private static String extractBalancedJson(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        if (t.isEmpty()) return t;
+
+        // 若整体用引号包住，尝试当作被转义的 JSON 字符串
+        if ((t.startsWith("\"") && t.endsWith("\"")) || (t.startsWith("'") && t.endsWith("'"))) {
+            String unq = unquoteAndUnescape(t);
+            String inner = tryExtractBalanced(unq);
+            if (inner != null) return inner.trim();
+            // 退一步：原样再试
+        }
+
+        String extracted = tryExtractBalanced(t);
+        return extracted != null ? extracted.trim() : t;
+    }
+
+    /* ======== helpers ======== */
+
+    /** 实际的“抠 JSON”逻辑：从第一个 '{' 或 '[' 开始扫描到匹配的 '}' 或 ']'。*/
+    private static String tryExtractBalanced(String s) {
+        int braceStart = s.indexOf('{');
+        int bracketStart = s.indexOf('[');
+        int start;
+        char open, close;
+
+        if (braceStart == -1 && bracketStart == -1) return null;
+        if (braceStart == -1 || (bracketStart != -1 && bracketStart < braceStart)) {
+            start = bracketStart; open = '['; close = ']';
+        } else {
+            start = braceStart; open = '{'; close = '}';
+        }
+
+        int depth = 0;
+        boolean inString = false;
+        char strQuote = 0;
+        boolean escape = false;
+
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+
+            if (inString) {
+                if (escape) {
+                    escape = false; // 跳过被转义的字符
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == strQuote) {
+                    inString = false;
+                }
+                continue;
+            } else {
+                if (c == '"' || c == '\'') {
+                    inString = true;
+                    strQuote = c;
+                    continue;
+                }
+                if (c == open) {
+                    depth++;
+                } else if (c == close) {
+                    depth--;
+                    if (depth == 0) {
+                        return s.substring(start, i + 1);
+                    }
+                }
+            }
+        }
+        return null; // 没匹配上，返回 null 让上层决定怎么兜底
+    }
+
+    /** 去掉首尾同类引号，并把常见转义还原（\" -> "，\\n 等不处理成真实换行，只保留原字符）。*/
+    private static String unquoteAndUnescape(String s) {
+        if (s == null || s.length() < 2) return s;
+        char q = s.charAt(0);
+        if (s.charAt(s.length() - 1) != q || (q != '"' && q != '\'')) return s;
+        String inner = s.substring(1, s.length() - 1);
+        // 常见反转义：先处理反斜杠自身，再处理引号
+        inner = inner.replace("\\\\", "\\");
+        if (q == '"') inner = inner.replace("\\\"", "\"");
+        else inner = inner.replace("\\'", "'");
+        return inner;
+    }
 
 
 
@@ -652,36 +964,6 @@ public class RouteGeneration {
     private static final long MIN_INTERVAL_MS   = 120;             // ≥120 ms/次 ≈ 8 QPS
     private static long lastRequestTime = 0;                       // 全局节流锁
 
-    /**
-     * 搜索附近 POI，并为每个 POI 追加街道 / 道路 / 行政区等 geo 信息
-     * 返回格式示例：
-     * {
-     *   name:"星巴克",
-     *   location:"116.416357,39.975368",
-     *   distance_meter:230,
-     *   geo:{
-     *     street:"安外大街",
-     *     number:"1号",
-     *     roads:[ ... ],
-     *     roadinters:[ ... ],
-     *     township:"安贞街道",
-     *     district:"朝阳区",
-     *     city:"北京市",
-     *     province:"北京市"
-     *   }
-     * }
-     */
-    // ============================================================================
-// 仅返回「name / lat / lng」三字段的精简 POI 列表
-// ============================================================================
-
-
-    /* ============================================================================
-       判断 POI 是否“有用”：必须有 name + typecode，且不属于低价值类型
-       ========================================================================== */
-
-    /* --------------------------------------------------------------- */
-    /* 逆地理编码，把街道 / 道路 / 行政区等信息封装成 JSONObject        */
 
 
 
@@ -769,10 +1051,10 @@ public class RouteGeneration {
     }
 
 
-    private static final java.util.concurrent.ExecutorService POI_EXEC =
-            java.util.concurrent.Executors.newFixedThreadPool(4); // 并发度按需调
+    private static final ExecutorService POI_EXEC =
+            Executors.newFixedThreadPool(4); // 并发度按需调
 
-    private static <T> T runBlockingOnWorker(java.util.concurrent.Callable<T> job) {
+    private static <T> T runBlockingOnWorker(Callable<T> job) {
         try { return POI_EXEC.submit(job).get(); }
         catch (Exception e) { throw new RuntimeException(e); }
     }
@@ -789,7 +1071,7 @@ public class RouteGeneration {
 
     public static JSONArray fetchPOIs(@NonNull Context ctx, @NonNull LatLng center, int halfSideMeters) {
         final List<LatLng> poly = buildSquarePolygon(center, halfSideMeters);
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
 
             return runBlockingOnWorker(() -> fetchPOIsByPolygonWorker(ctx.getApplicationContext(), poly));
         } else {
@@ -829,7 +1111,7 @@ public class RouteGeneration {
         if (target == null) {
             // 统一在末尾打印 SUMMARY（这里先走到 finally 区）
             long t1 = System.currentTimeMillis();
-            Log.e(TAG, String.format(java.util.Locale.US,
+            Log.e(TAG, String.format(Locale.US,
                     "SUMMARY  ret_total=%d db=%d(%.1f%%) api=%d(%.1f%%) timeMs=%d",
                     0, 0, 0.0, 0, 0.0, (t1 - t0)));
             return new JSONArray();
@@ -855,7 +1137,7 @@ public class RouteGeneration {
         } catch (Throwable t) {
             Log.e(TAG, "FATAL: getDatabase/DAO failed", t);
             long t1 = System.currentTimeMillis();
-            Log.e(TAG, String.format(java.util.Locale.US,
+            Log.e(TAG, String.format(Locale.US,
                     "SUMMARY  ret_total=%d db=%d(%.1f%%) api=%d(%.1f%%) timeMs=%d",
                     0, 0, 0.0, 0, 0.0, (t1 - t0)));
             return new JSONArray();
@@ -865,7 +1147,7 @@ public class RouteGeneration {
         long now = System.currentTimeMillis();
         boolean hotFresh = false, masterFresh = false, fuzzyFresh = false;
         boolean skipApi = false;                     // true → 本次不打 API，直接 DB-only
-        Set<String> apiTouchedIds = new java.util.HashSet<>(); // 本次 API 触达的 poiId
+        Set<String> apiTouchedIds = new HashSet<>(); // 本次 API 触达的 poiId
 
         // 1) 热区 TTL 命中？
         try {
@@ -949,19 +1231,19 @@ public class RouteGeneration {
 
         // ======== 统一最终读库（外扩查询 + 精确过滤）并统计来源占比 ========
         // 这里你可以继续使用你已有的 readFromDbTrimTo；为了统计 DB/API 占比，这里直接展开：
-        java.util.Set<String> seenSlim = new java.util.HashSet<>();
-        java.util.List<POI> locals = null;
+        Set<String> seenSlim = new HashSet<>();
+        List<POI> locals = null;
         try {
             RectLL readBox = inflateRectByMeters(target, 30.0); // DB 读外扩 30m
             locals = poiDao.queryByBBox(readBox.minLat, readBox.maxLat, readBox.minLng, readBox.maxLng, LOCAL_READ_LIMIT);
         } catch (Throwable t) {
             Log.e(TAG, "poiDao.queryByBBox failed", t);
-            locals = java.util.Collections.emptyList();
+            locals = Collections.emptyList();
         }
         if (locals != null) {
             for (POI e : locals) {
                 if (!(e.lat>=target.minLat && e.lat<=target.maxLat && e.lng>=target.minLng && e.lng<=target.maxLng)) continue;
-                String slim = String.format(java.util.Locale.US, "%s,(%.6f,%.6f)", e.name==null?"":e.name, e.lat, e.lng);
+                String slim = String.format(Locale.US, "%s,(%.6f,%.6f)", e.name==null?"":e.name, e.lat, e.lng);
                 if (!seenSlim.add(slim)) continue;
                 out.put(slim);
                 if (apiTouchedIds.contains(e.poiId)) retApi++; else retDb++;
@@ -974,7 +1256,7 @@ public class RouteGeneration {
         double apiPct = retTotal == 0 ? 0 : (100.0 * retApi / retTotal);
         long t1 = System.currentTimeMillis();
 
-        Log.e(TAG, String.format(java.util.Locale.US,
+        Log.e(TAG, String.format(Locale.US,
                 "SUMMARY  ret_total=%d db=%d(%.1f%%) api=%d(%.1f%%) timeMs=%d",
                 retTotal, retDb, dbPct, retApi, apiPct, (t1 - t0)));
 
@@ -1173,8 +1455,8 @@ public class RouteGeneration {
         }
 
         String url = "https://restapi.amap.com/v3/place/polygon"
-                + "?polygon=" + android.net.Uri.encode(polyStr)
-                + (typesJoined.isEmpty() ? "" : "&types=" + android.net.Uri.encode(typesJoined))
+                + "?polygon=" + Uri.encode(polyStr)
+                + (typesJoined.isEmpty() ? "" : "&types=" + Uri.encode(typesJoined))
                 + "&output=json&extensions=base"
                 + "&offset=1&page=1"
                 + "&key=" + AMAP_KEY;
@@ -1227,8 +1509,8 @@ public class RouteGeneration {
             }
 
             String url = "https://restapi.amap.com/v3/place/polygon"
-                    + "?polygon=" + android.net.Uri.encode(polyStr)
-                    + (typesJoined != null && !typesJoined.isEmpty() ? ("&types=" + android.net.Uri.encode(typesJoined)) : "")
+                    + "?polygon=" + Uri.encode(polyStr)
+                    + (typesJoined != null && !typesJoined.isEmpty() ? ("&types=" + Uri.encode(typesJoined)) : "")
                     + "&output=json&extensions=base"
                     + "&offset=" + Math.max(1, Math.min(25, pageSz))
                     + "&page=" + page
@@ -1326,19 +1608,14 @@ public class RouteGeneration {
         }
         return new RectLL(minLat,maxLat,minLng,maxLng);
     }
-    private static boolean pointInRect(double lat, double lng, RectLL r) {
-        return lat>=r.minLat && lat<=r.maxLat && lng>=r.minLng && lng<=r.maxLng;
-    }
-    private static String makeSlim(String name, double lat, double lng) {
-        return String.format(Locale.US, "%s,(%.6f,%.6f)", name==null?"":name, lat, lng);
-    }
+
     private static String rectToPolygon(RectLL r) {
         return String.format(Locale.US, "%.6f,%.6f|%.6f,%.6f|%.6f,%.6f|%.6f,%.6f|%.6f,%.6f",
                 r.minLng, r.maxLat,  r.maxLng, r.maxLat,  r.maxLng, r.minLat,  r.minLng, r.minLat,  r.minLng, r.maxLat);
     }
     private static String sha1(String s) {
-        try { java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
-            byte[] b = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        try { MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] b = md.digest(s.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder(); for (byte x : b) sb.append(String.format("%02x", x)); return sb.toString();
         } catch (Exception e) { return Integer.toHexString(s.hashCode()); }
     }
@@ -1383,447 +1660,6 @@ public class RouteGeneration {
         return meters / (Math.cos(Math.toRadians(lat)) * 111320.0 + 1e-12);
     }
 
-
-    /* ======================= 轻探测（count） ======================= */
-
-    private static int headCount(@NonNull Context ctx, @NonNull String polyStr, @NonNull String typesJoined) {
-        // 速率限制
-        synchronized (RouteGeneration.class) {
-            long diff = System.currentTimeMillis() - lastRequestTime;
-            if (diff < MIN_INTERVAL_MS) {
-                try { Thread.sleep(MIN_INTERVAL_MS - diff); } catch (InterruptedException ignore) {}
-            }
-            lastRequestTime = System.currentTimeMillis();
-        }
-        if (AMAP_KEY == null || AMAP_KEY.isEmpty()) return 0;
-
-        String url = "https://restapi.amap.com/v3/place/polygon"
-                + "?polygon=" + android.net.Uri.encode(polyStr)
-                + "&types=" + android.net.Uri.encode(typesJoined)
-                + "&output=json&extensions=base"
-                + "&offset=1&page=1"
-                + "&key=" + AMAP_KEY;
-
-        try {
-            JSONObject resp = httpGet(url);
-            if (resp == null || !"1".equals(resp.optString("status","0"))) return 0;
-            String countStr = resp.optString("count","0");
-            try { return Integer.parseInt(countStr); } catch (Exception ignore) { return 0; }
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    // —— 以“50 米”为量化步长，把矩形四边对齐到 50m 的网格上，保证 key 稳定 —— //
-    private static RectLL canonicalizeForKey(RectLL r) {
-        // 以矩形中纬度估算经度的米->度换算
-        double midLat = 0.5 * (r.minLat + r.maxLat);
-        double latDegPerM = 1.0 / 111_320.0;
-        double lngDegPerM = 1.0 / (111_320.0 * Math.cos(Math.toRadians(Math.max(-85, Math.min(85, midLat)))));
-
-        double quantumM = 50.0; // 50 米量化
-        double qLat = latDegPerM * quantumM;
-        double qLng = lngDegPerM * quantumM;
-
-        RectLL c = new RectLL();
-        c.minLat = Math.floor(r.minLat / qLat) * qLat;
-        c.maxLat = Math.ceil (r.maxLat / qLat) * qLat;
-        c.minLng = Math.floor(r.minLng / qLng) * qLng;
-        c.maxLng = Math.ceil (r.maxLng / qLng) * qLng;
-        return c;
-    }
-
-    private static String joinTypesStable(String[] types) {
-        String[] cp = Arrays.copyOf(types, types.length);
-        Arrays.sort(cp);
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < cp.length; i++) {
-            if (i > 0) sb.append(',');
-            sb.append(cp[i]);
-        }
-        return sb.toString();
-    }
-
-
-
-// ====== 下面是本方法私有的辅助实现 ======
-
-    private interface PoiConsumer {
-        // 返回 false 表示希望短路终止
-        boolean accept(JSONObject poi);
-    }
-    private interface ContinueSupplier {
-        boolean get();
-    }
-
-    private static void recursivelyDrainTypeGroup(
-            @NonNull Context ctx,
-            @NonNull String polyStr,
-            @NonNull String[] typesGroup,
-            int pageSz,
-            int globalNeed,
-            @NonNull PoiConsumer onPoi,
-            @NonNull ContinueSupplier shouldContinue
-    ) throws Exception {
-        if (globalNeed <= 0 || !shouldContinue.get()) return;
-
-        // 先做一次“探测”：offset=1, page=1，只看 count（文档：单次最多1000，超过需拆分）
-        int cnt = headCount(ctx, polyStr, joinTypes(typesGroup));
-        if (cnt <= 0) return;
-
-        if (cnt > 1000 && typesGroup.length > 1) {
-            // 二分此组，尽量把每次请求压到 ≤1000
-            int mid = typesGroup.length / 2;
-            String[] left  = java.util.Arrays.copyOfRange(typesGroup, 0, mid);
-            String[] right = java.util.Arrays.copyOfRange(typesGroup, mid, typesGroup.length);
-            recursivelyDrainTypeGroup(ctx, polyStr, left, pageSz, globalNeed, onPoi, shouldContinue);
-            recursivelyDrainTypeGroup(ctx, polyStr, right, pageSz, globalNeed, onPoi, shouldContinue);
-            return;
-        }
-
-        if (cnt > 1000 && typesGroup.length == 1) {
-            // 单一大类仍然 >1000 —— 提示需要空间切割（由你的上层切图来做）
-            Log.w("POI_POLY", "TYPE_OVERFLOW_NEED_SPATIAL_SPLIT type=" + typesGroup[0] + " count=" + cnt);
-            // 也可在这里选择“更细的中类/小类表”再去拆；此处保持简单只打日志。
-        }
-
-        // 真正分页拉取这一组（最多翻 100 页；offset ≤25）
-        int page = 1;
-        int emptyPages = 0;
-        while (shouldContinue.get()) {
-            // 节流
-            synchronized (RouteGeneration.class) {
-                long diff = System.currentTimeMillis() - lastRequestTime;
-                if (diff < MIN_INTERVAL_MS) try { Thread.sleep(MIN_INTERVAL_MS - diff); } catch (InterruptedException ignored) {}
-                lastRequestTime = System.currentTimeMillis();
-            }
-            if (AMAP_KEY == null || AMAP_KEY.isEmpty()) {
-                Log.e("POI_POLY", "AMAP_KEY is empty!");
-                return;
-            }
-
-            String url = "https://restapi.amap.com/v3/place/polygon"
-                    + "?polygon=" + Uri.encode(polyStr)
-                    + "&types=" + Uri.encode(joinTypes(typesGroup))
-                    + "&output=json&extensions=base"
-                    + "&offset=" + pageSz  // 文档建议 ≤25
-                    + "&page=" + page
-                    + "&key=" + AMAP_KEY;
-
-            JSONObject resp;
-            try {
-                resp = httpGet(url);
-            } catch (Throwable netErr) {
-                Log.e("POI_POLY", "httpGet error, page=" + page + ", url=" + url, netErr);
-                break;
-            }
-            if (resp == null) break;
-
-            String status = resp.optString("status", "0");
-            if (!"1".equals(status)) {
-                String info = resp.optString("info", "");
-                Log.w("POI_POLY", "AMap response status=" + status + ", info=" + info + ", page=" + page);
-                break;
-            }
-
-            JSONArray pois = resp.optJSONArray("pois");
-            if (pois == null || pois.length() == 0) {
-                emptyPages++;
-                if (emptyPages >= 2) break; // 连续空页，收尾
-                page++;
-                if (page > 100) break; // 安全上限
-                continue;
-            }
-
-            for (int i = 0; i < pois.length() && shouldContinue.get(); i++) {
-                JSONObject p = pois.optJSONObject(i);
-                if (p == null) continue;
-                if (!onPoi.accept(p)) return; // 回调可短路
-            }
-
-            // AMap 某些情况下会在“临界页后”直接不给；保守上限 100 页
-            page++;
-            if (page > 100) break;
-        }
-    }
-
-
-
-
-    // 多边形质心（简单平均法；可替换为更精确的多边形质心算法）
-    private static LatLng polygonCentroid(List<LatLng> pts) {
-        double sumLat = 0, sumLng = 0;
-        for (LatLng p : pts) { sumLat += p.latitude; sumLng += p.longitude; }
-        return new LatLng(sumLat / pts.size(), sumLng / pts.size());
-    }
-
-    // 你已有的排序：按中心点距离
-    private static JSONArray sortByDistance(JSONArray arr, LatLng center) {
-        java.util.List<String> list = new java.util.ArrayList<>();
-        for (int i = 0; i < arr.length(); i++) list.add(arr.optString(i, ""));
-        java.util.Collections.sort(list, (a, b) -> {
-            LatLng la = parseSlim(a), lb = parseSlim(b);
-            double da = distSq(la, center), db = distSq(lb, center);
-            return Double.compare(da, db);
-        });
-        JSONArray out = new JSONArray();
-        for (String s : list) out.put(s);
-        return out;
-    }
-    private static LatLng parseSlim(String slim) {
-        // 你的 makeSlim 反解析（若无，可简单兜底为 (0,0)）
-        try {
-            // 假定 slim = name|lat,lng 之类；这里示例仅演示，不影响主逻辑
-            int i = slim.lastIndexOf('|');
-            String ll = (i >= 0) ? slim.substring(i+1) : slim;
-            String[] kv = ll.split(",");
-            return new LatLng(Double.parseDouble(kv[0]), Double.parseDouble(kv[1]));
-        } catch (Throwable ignore) {
-            return new LatLng(0,0);
-        }
-    }
-    private static double distSq(LatLng a, LatLng b) {
-        double dlat = a.latitude - b.latitude, dlng = a.longitude - b.longitude;
-        return dlat*dlat + dlng*dlng;
-    }
-    private static String md5(String s) {
-        try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
-            byte[] r = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : r) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (Exception e) { return Integer.toHexString(s.hashCode()); }
-    }
-
-    // ====== 自适应切割版：尽量少调 API，必要时再细分，抓更多 ======
-   /*
-    /** 去除面积≈0的矩形 */
-
-
-
-
-
-    /** 单个子矩形：若无覆盖或过期 → 调 AMap 多边形搜索（矩形），最多抓 PER_RECT_MAX，入库 */
-
-
-
-
-
-    /** 单个子矩形：若无覆盖或过期 → 调 AMap 多边形搜索（矩形），最多抓 PER_RECT_MAX，入库 */
-
-
-
-
-    // ✅ 保留原签名，默认仅输出最终占比日志
-
-
-    // 计算多边形的包围盒
-    static class BBox { double minLat, maxLat, minLng, maxLng; }
-    private static BBox bboxOf(List<LatLng> poly) {
-        BBox b = new BBox();
-        b.minLat = +90; b.maxLat = -90; b.minLng = +180; b.maxLng = -180;
-        for (LatLng p : poly) {
-            b.minLat = Math.min(b.minLat, p.latitude);
-            b.maxLat = Math.max(b.maxLat, p.latitude);
-            b.minLng = Math.min(b.minLng, p.longitude);
-            b.maxLng = Math.max(b.maxLng, p.longitude);
-        }
-        return b;
-    }
-    // 判断两个包围盒在给定“米”边距下是否相交/相邻
-    private static boolean bboxTouches(BBox a, BBox b, double gapMeters, double refLat) {
-        double padLat = gapMeters / 111320.0;
-        double padLng = gapMeters / (Math.cos(Math.toRadians(refLat)) * 111320.0 + 1e-12);
-        return (a.minLat <= b.maxLat + padLat) && (a.maxLat >= b.minLat - padLat) &&
-                (a.minLng <= b.maxLng + padLng) && (a.maxLng >= b.minLng - padLng);
-    }
-
-    /**
-     * 把若干“未覆盖簇”的多边形，按邻近性合并成更少的大多边形（凸包）
-     * @param clusterPolys 各簇的闭合多边形（首尾相同）
-     * @param mergeGapMeters 相邻合并阈值（建议 200~500m）
-     * @param refLat 用于经度米转角度的参考纬度
-     */
-    private static List<List<LatLng>> mergeClustersToSuperPolys(List<List<LatLng>> clusterPolys,
-                                                                double mergeGapMeters,
-                                                                double refLat) {
-        int n = clusterPolys.size();
-        if (n <= 1) return clusterPolys;
-
-        // 预计算包围盒
-        BBox[] boxes = new BBox[n];
-        for (int i = 0; i < n; i++) boxes[i] = bboxOf(clusterPolys.get(i));
-
-        // 基于包围盒近邻的并查集合并
-        int[] uf = new int[n];
-        for (int i = 0; i < n; i++) uf[i] = i;
-        java.util.function.IntUnaryOperator find = new java.util.function.IntUnaryOperator() {
-            public int applyAsInt(int x) { return uf[x]==x ? x : (uf[x]=applyAsInt(uf[x])); }
-        };
-        java.util.function.BiConsumer<Integer,Integer> unite = (a,b)->{
-            int ra = find.applyAsInt(a), rb = find.applyAsInt(b);
-            if (ra != rb) uf[ra] = rb;
-        };
-
-        for (int i=0; i<n; i++) for (int j=i+1; j<n; j++) {
-            if (bboxTouches(boxes[i], boxes[j], mergeGapMeters, refLat)) unite.accept(i,j);
-        }
-
-        // 收集分组
-        Map<Integer, List<Integer>> groups = new HashMap<>();
-        for (int i=0;i<n;i++){
-            int r = find.applyAsInt(i);
-            groups.computeIfAbsent(r, k->new ArrayList<>()).add(i);
-        }
-
-        // 每组做一次凸包，形成“超级多边形”
-        List<List<LatLng>> supers = new ArrayList<>();
-        for (List<Integer> g : groups.values()) {
-            if (g.size()==1) { supers.add(clusterPolys.get(g.get(0))); continue; }
-            List<LatLng> all = new ArrayList<>();
-            for (int idx : g) {
-                // 去掉重复的尾点
-                List<LatLng> poly = clusterPolys.get(idx);
-                int m = poly.size();
-                for (int k=0; k<m; k++) {
-                    // 最后一个点若与第一个相同则跳过
-                    if (k==m-1 && poly.get(0).latitude==poly.get(k).latitude
-                            && poly.get(0).longitude==poly.get(k).longitude) break;
-                    all.add(poly.get(k));
-                }
-            }
-            List<LatLng> hull = convexHull(all);
-            if (hull.size()>=3) {
-                // 闭合
-                if (hull.get(0).latitude!=hull.get(hull.size()-1).latitude ||
-                        hull.get(0).longitude!=hull.get(hull.size()-1).longitude) {
-                    hull.add(hull.get(0));
-                }
-                supers.add(hull);
-            }
-        }
-        return supers;
-    }
-
-
-
-
-    /*private static JSONArray fetchNearbyPOIs(@NonNull Context ctx,
-                                             @NonNull LatLng origin,
-                                             int radiusMeter,
-                                             int maxCount,
-                                             int tileSizeMeters) throws Exception {
-        final String TAG = "POI_DEBUG";
-        long t0 = System.currentTimeMillis();
-
-        JSONArray slimArr = new JSONArray();
-        if (origin == null) return slimArr;
-
-        final AppDatabase db = AppDatabase.getDatabase(ctx.getApplicationContext());
-        final POIDao poiDao = db.poiDao();
-        final PoiTileCoverageDao covDao = db.poiTileCoverageDao();
-
-        int page = 1;
-        final int PAGE_SZ = 25; // AMap 单页最大 25
-
-        String cellKey = buildCellKey(origin, tileSizeMeters);
-        long now = System.currentTimeMillis();
-        int apiAdded = 0;
-
-        while (slimArr.length() < maxCount) {
-            synchronized (RouteGeneration.class) {
-                long diff = System.currentTimeMillis() - lastRequestTime;
-                if (diff < MIN_INTERVAL_MS) Thread.sleep(MIN_INTERVAL_MS - diff);
-                lastRequestTime = System.currentTimeMillis();
-            }
-
-            if (AMAP_KEY == null || AMAP_KEY.isEmpty()) {
-                Log.e(TAG, "AMAP_KEY is empty!");
-                break;
-            }
-
-            String url = "https://restapi.amap.com/v3/place/around"
-                    + "?location=" + origin.longitude + "," + origin.latitude
-                    + "&radius=" + radiusMeter
-                    + "&output=json&extensions=base"
-                    + "&offset=" + PAGE_SZ
-                    + "&page=" + page
-                    + "&key=" + AMAP_KEY;
-
-            JSONObject resp;
-            try {
-                resp = httpGet(url);
-            } catch (Throwable netErr) {
-                Log.e(TAG, "httpGet error, page=" + page + ", url=" + url, netErr);
-                break;
-            }
-
-            if (resp == null) {
-                Log.e(TAG, "httpGet returned null, page=" + page);
-                break;
-            }
-
-            String status = resp.optString("status", "0");
-            if (!"1".equals(status)) {
-                String info = resp.optString("info", "");
-                Log.w(TAG, "AMap response status=" + status + ", info=" + info + ", page=" + page);
-                break;
-            }
-
-            JSONArray pois = resp.optJSONArray("pois");
-            if (pois == null || pois.length() == 0) break;
-
-            for (int i = 0; i < pois.length() && slimArr.length() < maxCount; i++) {
-                JSONObject p = pois.optJSONObject(i);
-                if (p == null) continue;
-
-                String loc = p.optString("location", "").trim();
-                if (loc.isEmpty() || !loc.contains(",")) continue;
-                String[] ll = loc.split(",");
-                if (ll.length != 2) continue;
-
-                double lng, lat;
-                try {
-                    lng = Double.parseDouble(ll[0]);
-                    lat = Double.parseDouble(ll[1]);
-                } catch (NumberFormatException nfe) { continue; }
-
-                String name = p.optString("name", "");
-                String type = p.optString("type", "");
-                String poiId = p.optString("id", "");
-                String address = p.optString("address", "");
-
-                String slim = makeSlim(name, lat, lng);
-                slimArr.put(slim);
-                apiAdded++;
-
-                // upsert
-                POI entity = new POI();
-                entity.geocell = cellKey;
-                entity.poiId = (poiId == null || poiId.isEmpty()) ? (name + "@" + lat + "," + lng) : poiId;
-                entity.name = name; entity.type = type; entity.address = address; entity.lat = lat; entity.lng = lng;
-                entity.updatedAt = now;
-                poiDao.insertReplace(entity);
-            }
-
-            if (pois.length() < PAGE_SZ) break;
-            page++;
-        }
-
-        // 覆盖标记
-        PoiTileCoverage cov = new PoiTileCoverage();
-        cov.geocell = cellKey; cov.tileSizeMeters = tileSizeMeters; cov.coveredAt = now; covDao.upsert(cov);
-
-        return slimArr;
-    }*/
-
-
-
-
-
-
-
     public static List<LatLng> buildSquarePolygon(LatLng center, int halfSideMeters) {
         final double latMeter = 111320.0;
         final double lngMeter = Math.cos(Math.toRadians(center.latitude)) * 111320.0;
@@ -1839,127 +1675,6 @@ public class RouteGeneration {
                 new LatLng(minLat, minLng),
                 new LatLng(maxLat, minLng)
         );
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    static double haversine(double lat1, double lon1,
-                            double lat2, double lon2) {
-        final double R = 6371000; // 地球半径 (m)
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-    }
-
-    public static SelectedRoute GetPreferredRoute(){
-
-        return null;
-    }
-
-
-
-    private static String polygonForAMap(List<LatLng> path) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < path.size(); i++) {
-            LatLng p = path.get(i);
-            if (i > 0) sb.append("|");
-            sb.append(String.format(Locale.US, "%.6f,%.6f", p.longitude, p.latitude));
-        }
-        return sb.toString();
-    }
-
-    private static List<LatLng> parseAMapPolygon(String polyStr) {
-        List<LatLng> out = new ArrayList<>();
-        if (polyStr == null || polyStr.isEmpty()) return out;
-        String[] segs = polyStr.split("\\|");
-        for (String s : segs) {
-            String[] ll = s.split(",");
-            if (ll.length != 2) continue;
-            double lng = Double.parseDouble(ll[0]);
-            double lat = Double.parseDouble(ll[1]);
-            out.add(new LatLng(lat, lng));
-        }
-        return out;
-    }
-
-
-
-    private static boolean pointInPolygon(double lat, double lng, List<LatLng> poly) {
-        boolean inside = false;
-        for (int i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
-            double xi = poly.get(i).latitude, yi = poly.get(i).longitude;
-            double xj = poly.get(j).latitude, yj = poly.get(j).longitude;
-            boolean intersect = ((yi > lng) != (yj > lng)) &&
-                    (lat < (xj - xi) * (lng - yi) / (yj - yi + 1e-12) + xi);
-            if (intersect) inside = !inside;
-        }
-        return inside;
-    }
-
-    // 单调链构造凸包（输入点集，输出外轮廓，lat 做 x，lng 做 y）
-    private static List<LatLng> convexHull(List<LatLng> pts) {
-        if (pts.size() <= 3) return new ArrayList<>(pts);
-        pts.sort((a,b)-> Double.compare(a.latitude==b.latitude ? a.longitude-b.longitude : a.latitude-b.latitude, 0));
-        List<LatLng> lower = new ArrayList<>(), upper = new ArrayList<>();
-        for (LatLng p : pts) {
-            while (lower.size() >= 2 && cross(lower.get(lower.size()-2), lower.get(lower.size()-1), p) <= 0) lower.remove(lower.size()-1);
-            lower.add(p);
-        }
-        for (int i = pts.size()-1; i>=0; --i) {
-            LatLng p = pts.get(i);
-            while (upper.size() >= 2 && cross(upper.get(upper.size()-2), upper.get(upper.size()-1), p) <= 0) upper.remove(upper.size()-1);
-            upper.add(p);
-        }
-        lower.remove(lower.size()-1); upper.remove(upper.size()-1);
-        lower.addAll(upper);
-        return lower;
     }
     private static double cross(LatLng a, LatLng b, LatLng c) {
         double x1 = b.latitude - a.latitude, y1 = b.longitude - a.longitude;

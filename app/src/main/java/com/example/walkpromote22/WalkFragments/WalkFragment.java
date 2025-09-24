@@ -39,6 +39,7 @@ import android.widget.Toast;
 
 import androidx.fragment.app.Fragment;
 
+import com.example.walkpromote22.Activities.MainActivity;
 import com.example.walkpromote22.data.dao.PathDao;
 import com.example.walkpromote22.data.dao.UserDao;
 import com.example.walkpromote22.data.database.AppDatabase;
@@ -233,6 +234,9 @@ public class WalkFragment extends Fragment {
     @SuppressLint("SetTextI18n")
     private void startRunning(@Nullable List<Location> routeLocations) {
         isRunning = true;
+        // 在 TodayFragment / 你的导航入口处：
+        ((MainActivity) requireActivity()).ensureBackgroundLocationIfNeeded();
+
 
         Log.e(TAG,"传入startRunning的路线size="+routeLocations.size());
         if (toggleRunButton != null) toggleRunButton.setText("Stop");

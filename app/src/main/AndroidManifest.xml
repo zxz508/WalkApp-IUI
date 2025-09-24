@@ -8,10 +8,19 @@
         <package android:name="com.xiaomi.hm.health" /> <!-- Zepp Life -->
     </queries>
 
+    <uses-permission
+        android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
+        tools:targetApi="29" />
     <!-- 位置权限及网络权限 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <!-- 如果确实需要“健康”类型，一并声明（否则先不要加） -->
+
+    <!-- 若需要后台持续定位：Android 10+ 需声明此权限并分步请求 -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission
         android:name="android.permission.BODY_SENSORS"
         android:required="false"/>
@@ -83,9 +92,8 @@
         <service
             android:name=".TodayFragments.StepService"
             android:exported="false"
-            android:foregroundServiceType="health"
             android:enabled="true"
-            android:permission="android.permission.FOREGROUND_SERVICE_HEALTH"
+            android:foregroundServiceType="location|health"
             tools:ignore="ForegroundServicePermission,MissingClass" />
 
         <!-- LoginActivity 配置 -->

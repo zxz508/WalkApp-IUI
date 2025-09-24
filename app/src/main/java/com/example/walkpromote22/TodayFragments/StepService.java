@@ -1,385 +1,401 @@
 package com.example.walkpromote22.TodayFragments;
 
-import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH;
-
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
+import android.content.pm.ServiceInfo;
+import android.location.Criteria;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
-import android.os.Message;
-import android.os.Messenger;
-import android.os.RemoteException;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 
 import com.example.walkpromote22.Activities.MainActivity;
-import com.example.walkpromote22.Manager.StepSyncManager;
 import com.example.walkpromote22.R;
-import com.example.walkpromote22.data.dao.StepDao;
-import com.example.walkpromote22.data.database.AppDatabase;
-import com.example.walkpromote22.data.model.Step;
-import com.example.walkpromote22.tool.TimeUtil;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 
-/**
- * 完整版本地计步前台 Service。与 SensorStepProvider 配合，在无 Google / Samsung / Huawei
- * 服务时依靠硬件计步器 (TYPE_STEP_COUNTER / TYPE_STEP_DETECTOR) 获取步数。
- * <p>
- * 主要改动：
- * <ul>
- *     <li>Counter 模式逻辑简化，直接用 (raw – base) 计算今日步数。</li>
- *     <li>实时写 SharedPreferences，SensorStepProvider 能立即读取。</li>
- *     <li>每 30 秒持久化数据库，关屏/关机/换日亦持久化。</li>
- *     <li>前台通知展示今日步数。</li>
- * </ul>
- */
-public class StepService extends Service implements SensorEventListener {
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
-    // ==================== 常量 ====================
+public class StepService extends Service implements LocationListener, SensorEventListener {
+
     private static final String TAG = "StepService";
-    private static final String CHANNEL_ID   = "step_service_channel";
-    private static final String CHANNEL_NAME = "Step Service";
-    private static final int    NOTIFY_ID    = 10086;
-    // ① 新增常量（放在 KEY_TODAY_STEP 下面即可）
-    private static final String KEY_BASE_COUNT = "base_count";
 
+    // 通知
+    private static final String CHANNEL_ID = "walkcoach_location_channel";
+    private static final String CHANNEL_NAME = "Walking Location Service";
+    private static final int NOTIF_ID = 1001;
 
-    /** SharedPreferences 缓存键，供 SensorStepProvider 读取 */
-    private static final String PREF_NAME      = "step_service_cache";
-    private static final String KEY_TODAY_STEP = "today_steps";
-    private static final int PERMISSION_REQUEST_CODE = 100 ;
+    // Actions（对外）
+    public static final String ACTION_START = "com.example.walkpromote22.action.START";
+    public static final String ACTION_STOP  = "com.example.walkpromote22.action.STOP";
+    public static final String ACTION_STEP_UPDATE = "com.example.walkpromote22.action.STEP_UPDATE"; // 新增：步数广播
 
-    // ==================== 运行时字段 ====================
+    // 广播 extra
+    public static final String EXTRA_STEPS = "steps";
+    public static final String EXTRA_SOURCE = "source"; // "counter"/"detector"/"restore"
+
+    // 定位
+    private LocationManager locationManager;
+    private String currentProvider;
+
+    // 计步
     private SensorManager sensorManager;
-    private int           sensorType   = -1;   // 0 = Counter , 1 = Detector
-    private boolean       hasBase      = false;
-    private int           baseCount    = 0;    // TYPE_STEP_COUNTER 的基准值
+    private Sensor stepCounter;   // TYPE_STEP_COUNTER（开机以来总步数）
+    private Sensor stepDetector;  // TYPE_STEP_DETECTOR（每次+1）
+    private boolean activityPermissionGranted = false;
 
-    private int           todaySteps   = 0;    // 今日步数
-    private String        todayDate;
-    // 放在 KEY_TODAY_STEP 下面
-    private static final String KEY_TODAY_DISTANCE = "today_distance"; // m
-    // ------- 运行时 -------
-    private float todayDistanceM = 0f;      // 今日距离 (米)
+    // 当日计步持久化（SharedPreferences）
+    private static final String SP_NAME = "step_prefs";
+    private static final String KEY_DATE = "date";                 // yyyyMMdd
+    private static final String KEY_BASELINE = "counter_baseline"; // STEP_COUNTER基线
+    private static final String KEY_TODAY_STEPS = "today_steps";   // 当日累计（用于DETECTOR或无基线时）
 
-    private float strideM;
-    private NotificationManager  nm;
-    private NotificationCompat.Builder builder;
+    private int todaySteps = 0;          // 当日步数
+    private float counterBaseline = -1f; // STEP_COUNTER 基线
+    private String todayDateStr = "";    // 当天日期（yyyyMMdd）
 
-    private StepDao       stepDao;
-    private final ExecutorService IO = Executors.newSingleThreadExecutor();
-    private static final long AUTO_SAVE_INTERVAL_MS = 5_000000;      // 5 秒
+    private boolean running = false;
 
-    private final Handler autoSaveHandler = new Handler(Looper.getMainLooper());
-
-    private final Runnable autoSaveTask = new Runnable() {
-        @Override
-        public void run() {
-            saveToDb();                                   // ⬅ 每次调用持久化
-            autoSaveHandler.postDelayed(this, AUTO_SAVE_INTERVAL_MS);
-        }
-    };
-    /* 与 Activity 通讯，可选 */
-    private final Messenger messenger = new Messenger(new Handler(msg -> {
-        if (msg.what == 1) { // 1 = Activity 请求今日步数
-            Messenger reply = msg.replyTo;
-            if (reply != null) {
-                Message res = Message.obtain(null, 2); // 2 = 返回步数
-                Bundle b = new Bundle();
-                b.putInt("steps", todaySteps);
-                res.setData(b);
-                try { reply.send(res); } catch (RemoteException ignored) {}
-            }
-            return true;
-        }
-        return false;
-    }));
-
-    // ==================== 生命周期 ====================
+    // =============== 生命周期 ===============
     @Override
     public void onCreate() {
         super.onCreate();
-        stepDao   = AppDatabase.getDatabase(getApplicationContext()).stepDao();
-        todayDate = TimeUtil.getCurrentDate();
+        Log.i(TAG, "onCreate");
+        createNotificationChannel();
 
 
-
-
-        // StepService.onCreate()
-        startStepSensor();        // ① 注册传感器，确定 sensorType
-        restoreFromPrefs();       // ② 现在再恢复 hasBase 更安全
-        resumeFromDb();           // ③ 取回历史数据
-
-        initStride();
-        initForeground();
-        registerSystemReceiver();
-
-
+        startAsForegroundWithTypes();
+        initLocationManager();
+        restoreStepState();         // 恢复当日步数/基线
+        initSensorsAndRegister();   // 初始化并注册计步传感器（有权限才启用）
     }
 
-    /**
-     * 初始化今日步长 strideM（单位：米）。
-     * 调用时机：StepService.onCreate() 或 restoreFromPrefs() 之后。
-     * 数据来源：用户偏好 SharedPreferences，键名可按实际项目调整。
-     */
-    private void initStride() {
-        SharedPreferences userSp = getSharedPreferences("user_prefs", MODE_PRIVATE);
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        final String action = intent != null ? intent.getAction() : null;
+        Log.i(TAG, "onStartCommand action=" + action + " running=" + running);
 
-        // ① 读取身高（cm），若不存在默认 170cm
-        float heightCm = userSp.getFloat("HEIGHT_CM", 170f);
+        if (ACTION_STOP.equals(action)) {
+            stopLocationUpdates();
+            unregisterStepSensors();
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
-        // ② 可选：读取性别，若无则默认为男性系数
-        boolean isMale = userSp.getBoolean("IS_MALE", true);
+        // 默认行为：启动并请求定位 +（若有权限）计步已在 onCreate 注册
+        startLocationUpdatesSafe();
+        running = true;
 
-        // ③ 计算并写回字段
-        strideM = calculateStrideM(heightCm, isMale);
-    }
-    /**
-     * 经验公式计算步长（米）：
-     * 男性 stride ≈ 0.415 × 身高(cm) / 100
-     * 女性 stride ≈ 0.413 × 身高(cm) / 100
-     *
-     * @param heightCm 使用 cm 为单位的身高
-     * @param isMale   true=使用男性系数，false=女性
-     * @return         步长（米）
-     */
-    private float calculateStrideM(float heightCm, boolean isMale) {
-        float coeff = isMale ? 0.415f : 0.413f;
-        return heightCm * coeff / 100f;
+        // 刚启动时也广播一次，便于 UI 立即拿到最新值
+        broadcastSteps(todaySteps, "restore");
+
+        return START_STICKY;
     }
 
-    // ③ 新增恢复方法
-    private void restoreFromPrefs() {
-        SharedPreferences sp = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        todaySteps = sp.getInt(KEY_TODAY_STEP, 0);
-        baseCount  = sp.getInt(KEY_BASE_COUNT, 0);
-        todayDistanceM  = sp.getFloat (KEY_TODAY_DISTANCE, 0f);
-        hasBase    = (sensorType == 0 && baseCount != 0);
-    }
-    private void cacheToPrefs() {
-        getSharedPreferences(PREF_NAME, MODE_PRIVATE)
-                .edit()
-                .putInt(KEY_TODAY_STEP, todaySteps)
-                .putInt(KEY_BASE_COUNT,  baseCount)   // 关键新增
-                .putFloat(KEY_TODAY_DISTANCE, todayDistanceM)
-                .apply();
+    @Override
+    public void onDestroy() {
+        Log.i(TAG, "onDestroy");
+        stopLocationUpdates();
+        unregisterStepSensors();
+        super.onDestroy();
     }
 
     @Nullable
     @Override
-    public IBinder onBind(Intent intent) { return messenger.getBinder(); }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        autoSaveHandler.removeCallbacks(autoSaveTask);
-        autoSaveHandler.postDelayed(autoSaveTask, AUTO_SAVE_INTERVAL_MS);
-        return START_STICKY; }
-
-    @Override
-    public void onDestroy() {
-
-        if (sensorManager != null) sensorManager.unregisterListener(this);
-        unregisterReceiver(sysReceiver);
-        IO.shutdown();
-        stopForeground(true);
-
-        autoSaveHandler.removeCallbacks(autoSaveTask);  // 停止循环
-        super.onDestroy();
-
-
+    public IBinder onBind(Intent intent) {
+        // 不提供绑定
+        return null;
+    }
+    private boolean hasActivityRecPermission() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
+                        == PackageManager.PERMISSION_GRANTED;
     }
 
-    // ==================== 前台通知 ====================
-    @SuppressLint("ForegroundServiceType")
-    private void initForeground() {
-        nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel nc = new NotificationChannel(
-                    CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_MIN);
-            nc.enableLights(false);
-            nc.setShowBadge(false);
-            nc.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
-            nm.createNotificationChannel(nc);
-        }
 
-        Intent nfIntent = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(
-                this, 0, nfIntent,
-                Build.VERSION.SDK_INT >= 31 ?
-                        PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT :
-                        PendingIntent.FLAG_UPDATE_CURRENT);
 
-        builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentIntent(pi)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setOngoing(true)
-                .setContentTitle("Today\u2019s steps: 0")
-                .setContentText("Let\u2019s move!");
+    private void startAsForegroundWithTypes() {
+        Notification n = buildNotification("SmartWalkCoach 正在运行", "定位与行走监测已开启");
+        Log.e(TAG,"startAsForegroundWithTypes");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
 
-        // Add this import at the top of your file if not already present:
-        // import static android.content.Context.FOREGROUND_SERVICE_TYPE_HEALTH;
+            if (hasActivityRecPermission()) types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH;
+            Log.e(TAG, "FGS types=" + types + " (health=" + ((types & ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH) != 0) + ")");
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFY_ID, builder.build(), FOREGROUND_SERVICE_TYPE_HEALTH);
+            startForeground(NOTIF_ID, n, types);
+
+            if (hasActivityRecPermission()) {
+                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH;
+            }
+            // 仅三参；不要回退两参（两参会按 Manifest 所有类型校验，容易踩坑）
+            startForeground(NOTIF_ID, n, types);
         } else {
-            startForeground(NOTIFY_ID, builder.build());
+            startForeground(NOTIF_ID, n);
         }
     }
 
-    private void updateNotification() {
-        if (builder == null) {                 // 保险：任何线程调用前都先判断
-            Log.w(TAG, "builder is null, skip notify");
+
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel c = new NotificationChannel(
+                    CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW
+            );
+            c.setDescription("用于持续定位与步行服务的前台通知");
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.createNotificationChannel(c);
+        }
+    }
+
+    private Notification buildNotification(String title, String text) {
+        Intent tapIntent = new Intent(this, MainActivity.class);
+        tapIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(
+                this, 0, tapIntent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                        : PendingIntent.FLAG_UPDATE_CURRENT
+        );
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setForegroundServiceBehavior(
+                        Build.VERSION.SDK_INT >= 31
+                                ? NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE
+                                : NotificationCompat.FOREGROUND_SERVICE_DEFAULT
+                )
+                .setPriority(NotificationCompat.PRIORITY_LOW);
+        return b.build();
+    }
+
+    // =============== 定位（保留你的实现） ===============
+    private void initLocationManager() {
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+    }
+
+    private void startLocationUpdatesSafe() {
+        if (locationManager == null) initLocationManager();
+
+        boolean fine = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean coarse = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+
+        if (!fine && !coarse) {
+            Log.w(TAG, "No location permission, skip requesting updates.");
             return;
         }
-        builder.setContentTitle("Today’s steps: " + todaySteps);
-        nm.notify(NOTIFY_ID, builder.build());
-    }
 
+        try {
+            Criteria criteria = new Criteria();
+            criteria.setAccuracy(Criteria.ACCURACY_FINE);
+            criteria.setPowerRequirement(Criteria.POWER_LOW);
+            String provider = locationManager.getBestProvider(criteria, true);
 
-    // ==================== 传感器 ====================
-    private void startStepSensor() {
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        if (sensorManager == null) return;
+            if (provider == null) {
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    provider = LocationManager.GPS_PROVIDER;
+                } else if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    provider = LocationManager.NETWORK_PROVIDER;
+                }
+            }
 
-        Sensor counter  = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
-        Sensor detector = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
+            currentProvider = provider;
 
-        if (counter != null) {
-            sensorType = 0;
-            sensorManager.registerListener(this, counter, SensorManager.SENSOR_DELAY_NORMAL);
-            Log.d(TAG, "Using TYPE_STEP_COUNTER");
-        } else if (detector != null) {
-            sensorType = 1;
-            sensorManager.registerListener(this, detector, SensorManager.SENSOR_DELAY_NORMAL);
-            Log.d(TAG, "Using TYPE_STEP_DETECTOR");
-        } else {
-            Log.e(TAG, "No step sensor available!");
+            if (provider != null) {
+                long minTimeMs = 5000L;
+                float minDistanceM = 10f;
+                locationManager.requestLocationUpdates(provider, minTimeMs, minDistanceM, this);
+                Log.i(TAG, "Requesting location updates from provider=" + provider);
+            } else {
+                Log.w(TAG, "No available provider (GPS/Network disabled).");
+            }
+
+        } catch (SecurityException se) {
+            Log.e(TAG, "Missing location permission when requesting updates", se);
+        } catch (Throwable t) {
+            Log.e(TAG, "requestLocationUpdates failed", t);
         }
     }
 
+    private void stopLocationUpdates() {
+        if (locationManager != null) {
+            try {
+                locationManager.removeUpdates(this);
+            } catch (Throwable t) {
+                Log.w(TAG, "removeUpdates failed", t);
+            }
+        }
+    }
+
+    // LocationListener
+    @Override public void onLocationChanged(Location location) {
+        if (location == null) return;
+        Log.d(TAG, "onLocationChanged: " + location.getLatitude() + ", " + location.getLongitude());
+        // TODO：需要的话在此同步到 RouteSyncManager / 数据库
+    }
+    @Override public void onProviderEnabled(String provider) { Log.d(TAG, "onProviderEnabled: " + provider); }
+    @Override public void onProviderDisabled(String provider) { Log.d(TAG, "onProviderDisabled: " + provider); }
+    @Override @SuppressWarnings("deprecation")
+    public void onStatusChanged(String provider, int status, android.os.Bundle extras) {}
+
+    // =============== 计步：初始化/注册/卸载 ===============
+    private void initSensorsAndRegister() {
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager == null) {
+            Log.w(TAG, "No SensorManager");
+            return;
+        }
+
+        // Android 10+ 需要 ACTIVITY_RECOGNITION 运行时权限读取计步传感器
+        activityPermissionGranted =
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                        || ActivityCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
+                        == PackageManager.PERMISSION_GRANTED;
+
+        if (!activityPermissionGranted) {
+            Log.w(TAG, "No ACTIVITY_RECOGNITION permission, skip step sensors.");
+            return;
+        }
+
+        stepCounter  = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+        stepDetector = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
+
+        boolean anyRegistered = false;
+        if (stepCounter != null) {
+            anyRegistered |= sensorManager.registerListener(this, stepCounter, SensorManager.SENSOR_DELAY_NORMAL);
+        }
+        if (stepDetector != null) {
+            anyRegistered |= sensorManager.registerListener(this, stepDetector, SensorManager.SENSOR_DELAY_NORMAL);
+        }
+
+        if (!anyRegistered) {
+            Log.w(TAG, "No step sensors available on this device.");
+        }
+    }
+
+    private void unregisterStepSensors() {
+        if (sensorManager != null) {
+            try { sensorManager.unregisterListener(this); } catch (Throwable ignore) {}
+        }
+    }
+
+    // =============== 计步：状态恢复/保存/日切 ===============
+    private void restoreStepState() {
+        String today = getTodayStr();
+        android.content.SharedPreferences sp = getSharedPreferences(SP_NAME, MODE_PRIVATE);
+        String savedDate = sp.getString(KEY_DATE, "");
+        if (!today.equals(savedDate)) {
+            // 日期变更：重置
+            todayDateStr = today;
+            counterBaseline = -1f;
+            todaySteps = 0;
+            persistStepState();
+        } else {
+            todayDateStr = savedDate;
+            counterBaseline = sp.getFloat(KEY_BASELINE, -1f);
+            todaySteps = sp.getInt(KEY_TODAY_STEPS, 0);
+        }
+        Log.i(TAG, "restoreStepState date=" + todayDateStr + " baseline=" + counterBaseline + " steps=" + todaySteps);
+    }
+
+    private void persistStepState() {
+        android.content.SharedPreferences.Editor sp = getSharedPreferences(SP_NAME, MODE_PRIVATE).edit();
+        sp.putString(KEY_DATE, todayDateStr);
+        sp.putFloat(KEY_BASELINE, counterBaseline);
+        sp.putInt(KEY_TODAY_STEPS, todaySteps);
+        sp.apply();
+    }
+
+    private void ensureToday() {
+        String t = getTodayStr();
+        if (!t.equals(todayDateStr)) {
+            todayDateStr = t;
+            counterBaseline = -1f;
+            todaySteps = 0;
+            persistStepState();
+            broadcastSteps(todaySteps, "date-reset");
+        }
+    }
+
+    private static String getTodayStr() {
+        return new SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(new Date());
+    }
+
+    // =============== 计步：回调计算 ===============
     @Override
     public void onSensorChanged(SensorEvent event) {
+        if (event == null || event.sensor == null) return;
 
-        if (sensorType == 0) { // Counter
-            int raw = (int) event.values[0];
-            if (!hasBase) {
-                baseCount = raw;
-                hasBase   = true;
+        ensureToday();
+
+        if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
+            float totalSinceBoot = event.values != null && event.values.length > 0 ? event.values[0] : 0f;
+
+            // 第一次或重启后建立基线
+            if (counterBaseline < 0f || totalSinceBoot < counterBaseline) {
+                counterBaseline = totalSinceBoot;
             }
-            todaySteps = raw - baseCount;
-        } else if (sensorType == 1) { // Detector
-            if (event.values[0] == 1.0f) todaySteps++;
-        }
 
+            int computed = Math.max(0, Math.round(totalSinceBoot - counterBaseline));
+            if (computed != todaySteps) {
+                todaySteps = computed;
+                persistStepState();
+                broadcastSteps(todaySteps, "counter");
 
-
-
-        cacheToPrefs();
-        updateNotification();
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) { /* no-op */ }
-
-    // ==================== 数据持久化 ====================
-    /** 每次写 SharedPreferences，SensorStepProvider 能读取最新值 */
-
-
-    /** 恢复今日步数（如服务被重启）*/
-
-
-    /** 保存到数据库 */
-    /** 保存到数据库 */
-    /**
-     * 把今日步数写入数据库（本方法由定时器每 5 秒调用一次）
-     * 不修改方法名、不省略任何逻辑。
-     */
-    private void saveToDb() {
-        IO.execute(() -> {
-            String userKey = getSharedPreferences("user_prefs", MODE_PRIVATE)
-                    .getString("USER_KEY", "default_user");
-
-            Step rec = stepDao.getStepByDate(userKey, todayDate);
-            todayDistanceM = todaySteps * strideM;
-            if (rec == null) {
-                rec = new Step(userKey, todayDate, todaySteps, todayDistanceM / 1000f); // km
-            } else {
-                rec.setStepCount(todaySteps);
-                rec.setDistance(todayDistanceM / 1000f);
+                // TODO：如需写数据库/同步服务，这里调用（避免“虚构”，留钩子）
+                // StepSyncManager.saveLocalToday(todaySteps);
+                // stepDao.upsert(...);
             }
-            stepDao.insertStep(rec);
-            new StepSyncManager(getApplicationContext()).uploadToday();
-        });
-    }
+        } else if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
+            // 某些设备无 COUNTER，可用 DETECTOR 叠加
+            // 注意：若同时有 COUNTER，这里可以选择不叠加，避免重复
+            if (stepCounter == null) {
+                int newVal = todaySteps + 1;
+                if (newVal != todaySteps) {
+                    todaySteps = newVal;
+                    persistStepState();
+                    broadcastSteps(todaySteps, "detector");
 
-    private void resumeFromDb() {
-        IO.execute(() -> {
-            String userKey = getSharedPreferences("user_prefs", MODE_PRIVATE)
-                    .getString("USER_KEY", "default_user");
-
-            Step rec = stepDao.getStepByDate(userKey, todayDate);
-            if (rec != null) {
-                todaySteps      = rec.getStepCount();
-                todayDistanceM  = rec.getDistance() * 1000f;
-
-                // ---- 切回主线程再更新 ----
-                new Handler(Looper.getMainLooper()).post(() -> {
-                    cacheToPrefs();            // 写共享缓存
-                    updateNotification();      // 此时 builder 已初始化
-                });
+                    // TODO：如需写数据库/同步服务，这里调用
+                }
             }
-        });
-    }
-
-
-    // ==================== 系统广播 ====================
-    private BroadcastReceiver sysReceiver;
-
-    @SuppressLint("UnspecifiedRegisterReceiverFlag")
-    private void registerSystemReceiver() {
-        IntentFilter f = new IntentFilter();
-        f.addAction(Intent.ACTION_SCREEN_OFF);
-        f.addAction(Intent.ACTION_DATE_CHANGED);
-        f.addAction(Intent.ACTION_SHUTDOWN);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(sysReceiver = new InnerReceiver(), f, RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(sysReceiver = new InnerReceiver(), f);
         }
     }
 
-    private class InnerReceiver extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            saveToDb();
+    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
-        }
+    // =============== 广播给 UI ===============
+    private void broadcastSteps(int steps, String source) {
+        Intent i = new Intent(ACTION_STEP_UPDATE);
+        i.putExtra(EXTRA_STEPS, steps);
+        i.putExtra(EXTRA_SOURCE, source);
+        // 直接应用内广播（普通广播即可；若你使用 LocalBroadcastManager，可自行替换）
+        sendBroadcast(i);
+        Log.d(TAG, "broadcastSteps steps=" + steps + " source=" + source);
     }
-
-    /** 零点跨天处理 */
-
 }
