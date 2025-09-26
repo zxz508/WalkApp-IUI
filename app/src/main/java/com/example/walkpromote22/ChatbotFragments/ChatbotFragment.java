@@ -1,15 +1,15 @@
 package com.example.walkpromote22.ChatbotFragments;
 
 
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchTrafficEventsOnce;
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.generateRoute;
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.getInterestingPoint;
+import static com.example.walkpromote22.ChatbotFragments.GeographyBot.fetchTrafficEventsOnce;
+import static com.example.walkpromote22.ChatbotFragments.GeographyBot.generateRoute;
+import static com.example.walkpromote22.ChatbotFragments.GeographyBot.getInterestingPoint;
 import static com.example.walkpromote22.Manager.RouteSyncManager.createRoute;
 import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitialized;
 
 import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
 import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
-import static com.example.walkpromote22.WalkFragments.SmartGuide.buildUserInputs;
+import static com.example.walkpromote22.WalkFragments.AccompanyBot.buildUserInputs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 import static com.example.walkpromote22.tool.MapTool.rank;
 import static com.example.walkpromote22.tool.MapTool.trimLocationName;
@@ -32,6 +32,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.Log;
@@ -90,8 +92,16 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -104,13 +114,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+
 
 public class ChatbotFragment extends Fragment {
     private ActivityResultLauncher<String[]> requestPermsLauncher;   // 前台/多权限
@@ -135,6 +149,7 @@ public class ChatbotFragment extends Fragment {
     private RecyclerView recyclerView;
     private ChatAdapter chatAdapter;
     private List<Message> messageList;
+    private boolean startNav=false;
     // 路线展示区域
 
     // 对话辅助类和图片 Uri
@@ -167,7 +182,7 @@ public class ChatbotFragment extends Fragment {
     private View activeSend;
     // 全局对话历史
     private JSONArray conversationHistory = new JSONArray();
-    private JSONArray localConversationHistory=new JSONArray();
+    public static JSONArray localConversationHistory=new JSONArray();
 
     @Nullable
     @Override
@@ -282,10 +297,6 @@ public class ChatbotFragment extends Fragment {
         );
 
 
-
-
-
-
         if (weather != null) {
             // 如需翻译
             BaiduTranslateHelper.translateToEnglish(weather, new BaiduTranslateHelper.TranslateCallback() {
@@ -314,90 +325,91 @@ public class ChatbotFragment extends Fragment {
         String apiKey = getApiKeyFromSecureStorage();
         chatbotHelper = new ChatbotHelper();
         sendButton.setOnClickListener(v -> {
-            String userMessage = userInput.getText().toString().trim();
-            if (!userMessage.isEmpty()) {
-                addChatMessage(userMessage, true);
 
-                final String[] Payload = {""};
-                loadStepWeeklyReport(new StepWeeklyReportCallback() {
-                    @Override
-                    public void onSuccess(StepWeeklyReport report) {
-                        // Fragment 可能已被移除，先做生命周期防护
-                        if (!isAdded() || getView() == null) return;
+                String userMessage = userInput.getText().toString().trim();
+                if (!userMessage.isEmpty()) {
+                    addChatMessage(userMessage, true);
 
-                        // 拼装要喂给 feed 的字符串
-                        Payload[0] = "User step data\n" + report.stepsToString();
-                    }
+                    final String[] Payload = {""};
+                    loadStepWeeklyReport(new StepWeeklyReportCallback() {
+                        @Override
+                        public void onSuccess(StepWeeklyReport report) {
+                            // Fragment 可能已被移除，先做生命周期防护
+                            if (!isAdded() || getView() == null) return;
 
-                    @Override
-                    public void onError(Throwable t) {
-                        android.util.Log.e(TAG, "loadStepWeeklyReport failed", t);
-                        if (!isAdded() || getView() == null) return;
-                        addChatMessage("获取运动周报失败：" + t.getMessage(), false);
-                    }
-                });
-                initialDialog.setVisibility(View.GONE);
-                weatherContent.setVisibility(View.GONE);
-                weatherCard.setVisibility(View.GONE);
-                userInput.setText("");
-                ZonedDateTime now = ZonedDateTime.now();
-                String formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
-                // 准备 system promote
-                String promote ="You are an route planing assistant in English for user and you can get extra information's from API rather than user, ****don't mention any longitude and latitude in your conversation**** "+
+                            // 拼装要喂给 feed 的字符串
+                            Payload[0] = "User step data\n" + report.stepsToString();
+                        }
+
+                        @Override
+                        public void onError(Throwable t) {
+                            android.util.Log.e(TAG, "loadStepWeeklyReport failed", t);
+                            if (!isAdded() || getView() == null) return;
+                            addChatMessage("获取运动周报失败：" + t.getMessage(), false);
+                        }
+                    });
+                    initialDialog.setVisibility(View.GONE);
+                    weatherContent.setVisibility(View.GONE);
+                    weatherCard.setVisibility(View.GONE);
+                    userInput.setText("");
+                    ZonedDateTime now = ZonedDateTime.now();
+                    String formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
+                    // 准备 system promote
+                    String promote = "You are an route planing assistant in English for user and you can get extra information's from API rather than user, ****don't mention any longitude and latitude in your conversation**** " +
                             "Following are very important:*****" +
                             "When you want a route from Map API designed according to user requests, you just respond: {Map_API_Route} and API will give you the information's in JSON (respond {Map_API_Certain} before if user has a clear destination)" +
-                            "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain} and API will give you correspond POIs name and locations FROM NEAR TO FAR"+
-                            "When you want interesting POIs nearby for recommendation to user, respond: {Map_POI}"+
-                            "When you want to get the user recent walking data and visualize it to user as report,you just respond: {StepReport_API}"+
-                            "When you want to get user's history queries on route and results to refer to , just respond: {User_History}"+
-                            "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}"+
+                            "When you want information's from Map API for certain name POIs (Like a name for shop or a name for location), you just respond: {Map_API_Certain} and API will give you correspond POIs name and locations FROM NEAR TO FAR" +
+                            "When you want interesting POIs nearby for recommendation to user, respond: {Map_POI}" +
+                            "When you want to get the user recent walking data and visualize it to user as report,you just respond: {StepReport_API}" +
+                            "When you want to get user's history queries on route and results to refer to , just respond: {User_History}" +
+                            "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}" +
 
-                            "The time now is"+formatted+", and the weather now is"+weather+",the user is at"+userLocation+",the user recent walking steps are"+Payload[0]+
-                            "You can only use token twice in a row without the user requesting it"+
-                            "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****."+
+                            "The time now is" + formatted + ", and the weather now is" + weather + ",the user is at" + userLocation + ",the user recent walking steps are" + Payload[0] +
+                            "You can only use token twice in a row without the user requesting it" +
+                            "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****." +
 
 
                             "Here are some sample conversations I'd like you to have with your users(*****Only for sample,you should have different talk in different situations, weather,time and so on*****):" +
                             "Sample Conversation1\n" +
                             "User:I would like to have a walk now, but I have no specific destination, can you give me some advice?\n" +
-                            "App: Based on the number of steps you have taken recently, I would like to recommend you a 6 kilometers of walking back and forth. And the weather outside is suitable for a walk now, what do you think?"+
-                            "User: OK, give me some route recommendations"+
-                            "App: Sure, I can find parks, lakes, squares, and other walkable places for you, and you can see if there are any that interest you on the list I'll give you later.Searching...{Map_POI}"+
+                            "App: Based on the number of steps you have taken recently, I would like to recommend you a 6 kilometers of walking back and forth. And the weather outside is suitable for a walk now, what do you think?" +
+                            "User: OK, give me some route recommendations" +
+                            "App: Sure, I can find parks, lakes, squares, and other walkable places for you, and you can see if there are any that interest you on the list I'll give you later.Searching...{Map_POI}" +
                             "App: I found these places, and the round-trip exercise will be enough to meet our needs for today.:\n" +
                             "  1. **金银湖龙舟文化公园** - A cultural park known for dragon boat activities and very close by.\n" +
                             "  2. **金银湖** - A cultural plaza near the lake.\n" +
                             "  3. **金银湖国家城市湿地公园** - A wetland park featuring a bird island.\n" +
                             "    \n" +
-                            "     If you think any of the above places you are interested in, please let me know and I will generate a route for you and lead you there"+
-                            "User:Ok, the nearest one looks nice, but I'd also like to pass a coffee shop on the way"+
-                            "App: Got it, searching nearby coffee shop.{Map_API_Certain}"+
-                            "App: I found several coffee shops. If you don't mind, I'll take you to the nearest coffee shop first and then to the park you want to go to.{Map_API_Route}"+
-                            "User: OK, let's go"+
-                            "App:{Navigation_API}"+
+                            "If you think any of the above places you are interested in, please let me know and I will generate a route for you and lead you there" +
+                            "User:Ok, the nearest one looks nice, but I'd also like to pass a coffee shop on the way" +
+                            "App: Got it, searching nearby coffee shop.{Map_API_Certain}" +
+                            "App: I found several coffee shops. If you don't mind, I'll take you to the nearest coffee shop first and then to the park you want to go to.{Map_API_Route}" +
+                            "User: OK, let's go" +
+                            "App:{Navigation_API}" +
                             "Sample Conversation2:" +
-                            "App: 👋 Hi there! Ready for a refreshing walk today?\n"+
-                            "User:I wanna walk to a KFC\n"+
-                            "App:Got it ✅ Checking nearby KFCs.{Map_API_Certain}"+
-                            "App:OK, I have found several KFC around you. Which specifically you aim at?\n"+
-                            "User:The one around my home"+
-                            "App:Got it, generating a route to it.{Map_API_Route}"+
-                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
-                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
-                            "User:Yes, please"+
-                            "App:{Navigation_API}"+
+                            "App: 👋 Hi there! Ready for a refreshing walk today?\n" +
+                            "User:I wanna walk to a KFC\n" +
+                            "App:Got it ✅ Checking nearby KFCs.{Map_API_Certain}" +
+                            "App:OK, I have found several KFC around you. Which specifically you aim at?\n" +
+                            "User:The one around my home" +
+                            "App:Got it, generating a route to it.{Map_API_Route}" +
+                            "App:{Drawing_API} I will show you the route on map now, please wait a second. " +
+                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation" +
+                            "User:Yes, please" +
+                            "App:{Navigation_API}" +
                             "Sample Conversation3:" +
-                            "User:I would like to have a walk to a park, any suggestions?"+
-                            "App:Got it ✅ Checking nearby parks.{Map_API_Certain}"+
-                            "App:OK, I have found several parks around you. Which specifically you aim at?\n"+
-                            "App:Got it, generating a route to it.{Map_API_Route}"+
-                            "App:{Drawing_API} I will show you the route on map now, please wait a second. "+
-                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation"+
-                            "User:Yes, please"+
-                            "App:{Navigation_API}"+
+                            "User:I would like to have a walk to a park, any suggestions?" +
+                            "App:Got it ✅ Checking nearby parks.{Map_API_Certain}" +
+                            "App:OK, I have found several parks around you. Which specifically you aim at?\n" +
+                            "App:Got it, generating a route to it.{Map_API_Route}" +
+                            "App:{Drawing_API} I will show you the route on map now, please wait a second. " +
+                            "App: Great! Your route to the KFC is visible on the map now, if you think the route is good I can start helping you with the navigation" +
+                            "User:Yes, please" +
+                            "App:{Navigation_API}" +
                             "Sample Conversation4\n" +
                             "User:Generate a suitable route for me\n" +
                             "App:Great! To create the best route, I need a bit of info:\n" +
-                            "App:Are there any places you would like to pass by or avoid?"+
+                            "App:Are there any places you would like to pass by or avoid?" +
                             "App:Do you have a specific destination?If not, how long do you want to walk (time or distance)?\n" +
                             "App:Do you prefer quiet streets, scenic spots, or lively areas?\n" +
                             "User: Maybe around 30 minutes. And I’d like a scenic route.\n" +
@@ -406,7 +418,7 @@ public class ChatbotFragment extends Fragment {
                             "User: Sounds perfect.\n" +
                             "App:  Awesome! I’ll guide you step by step. Let’s start at Oakwood Park entrance. Ready to begin?." +
                             "User: Yes.\n" +
-                            "App: {Navigation_API}"+
+                            "App: {Navigation_API}" +
                             "User (midway): I’m getting a bit tired.\n" +
                             "App: You’re doing great! 💪 You’ve already covered 1.4 km—over halfway there. How about slowing down for a minute to enjoy the view by the lake?\n" +
                             "User (later): Okay, I’m back on track.\n" +
@@ -414,37 +426,37 @@ public class ChatbotFragment extends Fragment {
                             "User (end): I’m done!\n" +
                             "App: 🎉 Congratulations! You walked 2.6 km in 31 minutes. That’s about 3,400 steps. I’ve saved your route in case you want to share it on your socials. Want me to post a highlight for you?\n" +
                             "User: Yes, post it.\n" +
-                            "App: Done ✅ Shared your walk summary with today’s scenic photo. 🌄 Way to go—you made today healthier and brighter!"
-                            ;
+                            "App: Done ✅ Shared your walk summary with today’s scenic photo. 🌄 Way to go—you made today healthier and brighter!";
 
-                // 把 promote 放到首位，且只插一次
-                // ==== 修改点 1：更新 localConversationHistory ====
-                localConversationHistory = ensureSystemPromote(localConversationHistory, promote);
-                try {
-                    localConversationHistory.put(new JSONObject()
-                            .put("role", "user")
-                            .put("content", userMessage));
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
+                    // 把 promote 放到首位，且只插一次
+                    // ==== 修改点 1：更新 localConversationHistory ====
+                    localConversationHistory = ensureSystemPromote(localConversationHistory, promote);
+                    try {
+                        localConversationHistory.put(new JSONObject()
+                                .put("role", "user")
+                                .put("content", userMessage));
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
 
-                // ==== 修改点 2：conversationHistory 仅保存全局上下文 ====
-                try {
-                    conversationHistory.put(new JSONObject()
-                            .put("role", "user")
-                            .put("content", userMessage));
-                } catch (JSONException e) {
-                    e.printStackTrace();
-                }
+                    // ==== 修改点 2：conversationHistory 仅保存全局上下文 ====
+                    try {
+                        conversationHistory.put(new JSONObject()
+                                .put("role", "user")
+                                .put("content", userMessage));
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
 
-                // 发送并处理工具触发
-                try {
-                    sendWithPromoteAndTooling(userMessage);
-                } catch (JSONException e) {
-                    throw new RuntimeException(e);
+                    // 发送并处理工具触发
+                    try {
+                        sendWithPromoteAndTooling(userMessage);
+                    } catch (JSONException e) {
+                        throw new RuntimeException(e);
+                    }
                 }
-            }
         });
+
     }
 
 
@@ -539,8 +551,8 @@ public class ChatbotFragment extends Fragment {
                             // 清理助手文本中的技术性符号，避免干扰 generateRoute（展示/拼上下文时的轻量清洗即可）
                             c = c.replaceAll("(?is)```.*?```", " ");
                             c = c.replaceAll("(?im)^API_(Result|Done)\\s*:\\s*\\{.*?\\}.*$", " ");
-                            c = c.replaceAll("(?i)\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}", " ");
-                            c = c.replaceAll("(?i)Request\\s*:\\s*\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}", " ");
+                            c = c.replaceAll("(?i)\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|Media_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}", " ");
+                            c = c.replaceAll("(?i)Request\\s*:\\s*\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|Media_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}", " ");
                             c = c.replaceAll("(?m)^\\s*\\[.*\\]\\s*$", " ");
                             c = c.replaceAll("(?m)^\\s*\\{.*\\}\\s*$", " ");
                             c = c.replaceAll("\\s{2,}", " ").trim();
@@ -575,6 +587,7 @@ public class ChatbotFragment extends Fragment {
         final java.util.regex.Pattern P_HISTORY_BRACE  = java.util.regex.Pattern.compile("\\{\\s*User_History\\s*\\}", CI);
         final java.util.regex.Pattern P_NAV_BRACE      = java.util.regex.Pattern.compile("\\{\\s*Navigation_API\\s*\\}", CI);
         final java.util.regex.Pattern P_POI_BRACE      = java.util.regex.Pattern.compile("\\{\\s*MAP_POI\\s*\\}", CI);
+        final java.util.regex.Pattern P_MEDIA_BRACE    = java.util.regex.Pattern.compile("\\{\\s*Media_POI\\s*\\}", CI);
 
         final java.util.regex.Pattern P_ROUTE_REQ      = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Route\\s*\\}", CI);
         final java.util.regex.Pattern P_CERTAIN_REQ    = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API_Certain\\s*\\}", CI);
@@ -584,15 +597,16 @@ public class ChatbotFragment extends Fragment {
         final java.util.regex.Pattern P_HISTORY_REQ    = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*User_History\\s*\\}", CI);
         final java.util.regex.Pattern P_NAV_REQ        = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Navigation_API\\s*\\}", CI);
         final java.util.regex.Pattern P_ROUTE_OLD_REQ  = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
-        final java.util.regex.Pattern P_ROUTE_OLD_BR   = java.util.regex.Pattern.compile("\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
-        final java.util.regex.Pattern P_POI_REQ        = java.util.regex.Pattern.compile("\\{\\s*Map_POI(?:_All)?\\s*\\}", CI);
+        final java.util.regex.Pattern P_ROUTE_OLD_BR   = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_API(?:_All)?\\s*\\}", CI);
+        final java.util.regex.Pattern P_POI_REQ        = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Map_POI(?:_All)?\\s*\\}", CI);
+        final java.util.regex.Pattern P_MEDIA_REQ        = java.util.regex.Pattern.compile("Request\\s*:\\s*\\{\\s*Media_POI(?:_All)?\\s*\\}", CI);
 
         // —— 5) 清洗assistant文本并写入历史 的本地工具（lambda）—— //
         final java.util.regex.Pattern P_CODEBLOCK   = java.util.regex.Pattern.compile("(?is)```.*?```");
         final java.util.regex.Pattern P_JSON_LINE   = java.util.regex.Pattern.compile("(?m)^\\s*\\{.*\\}\\s*$|^\\s*\\[.*\\]\\s*$");
         final java.util.regex.Pattern P_API_TOKENS  = java.util.regex.Pattern.compile(
-                "\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}"
-                        + "|Request\\s*:\\s*\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|StepData_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}",
+                "\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|Media_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}"
+                        + "|Request\\s*:\\s*\\{\\s*(Map_API_Route|Map_API_Certain|Drawing_API|Media_API|StepReport_API|User_History|Navigation_API|Map_API(?:_All)?|MAP_POI|Map_POI(?:_All)?)\\s*\\}",
                 java.util.regex.Pattern.CASE_INSENSITIVE
         );
 
@@ -715,7 +729,7 @@ public class ChatbotFragment extends Fragment {
                     || P_ROUTE_OLD_BR.matcher(replyRaw).find() || P_ROUTE_OLD_REQ.matcher(replyRaw).find();
             boolean needCertain   = P_CERTAIN_BRACE.matcher(replyRaw).find() || P_CERTAIN_REQ.matcher(replyRaw).find();
             boolean needDraw      = P_DRAW_BRACE.matcher(replyRaw).find()    || P_DRAW_REQ.matcher(replyRaw).find();
-            boolean needStep      = P_STEP_BRACE.matcher(replyRaw).find()    || P_STEP_REQ.matcher(replyRaw).find();
+            boolean needMedia      = P_MEDIA_BRACE.matcher(replyRaw).find()    || P_MEDIA_REQ.matcher(replyRaw).find();
             boolean needHistory   = P_HISTORY_BRACE.matcher(replyRaw).find() || P_HISTORY_REQ.matcher(replyRaw).find();
             boolean needNav       = P_NAV_BRACE.matcher(replyRaw).find()     || P_NAV_REQ.matcher(replyRaw).find();
             boolean needStepReport= P_STEP_REPORT.matcher(replyRaw).find()   || P_STEP_REPORT_REQ.matcher(replyRaw).find();
@@ -740,6 +754,8 @@ public class ChatbotFragment extends Fragment {
             visible = P_STEP_REPORT_REQ.matcher(visible).replaceAll("");
             visible = P_POI_REQ.matcher(visible).replaceAll("");
             visible = P_POI_BRACE.matcher(visible).replaceAll("");
+            visible = P_MEDIA_REQ.matcher(visible).replaceAll("");
+            visible =P_MEDIA_BRACE.matcher(visible).replaceAll("");
             visible = visible.replaceAll("\\n{3,}", "\n\n").trim();
 
             if (!visible.isEmpty()) {
@@ -801,6 +817,9 @@ public class ChatbotFragment extends Fragment {
             if (needDraw) {
                 handleDrawRequest(dialogForRoute, lastRouteRef, feedRef);
                 return;
+            }
+            if(needMedia){
+                handleMediaRequest();
             }
             // 无工具触发：只展示自然语言（上面已展示）
         });
@@ -964,7 +983,7 @@ public class ChatbotFragment extends Fragment {
                     org.json.JSONArray poiArray;
                     try {
                         Log.e("tag","2");
-                        poiArray = RouteGeneration.getCoreLocationsFromRequirement(requireContext(),dialogForRoute);
+                        poiArray = GeographyBot.getCoreLocationsFromRequirement(requireContext(),dialogForRoute);
                     } catch (Exception ex) {
                        // Log.e(TAG, "Map_API_Certain 调用失败：", ex);
                         poiArray = new org.json.JSONArray();
@@ -1282,7 +1301,7 @@ public class ChatbotFragment extends Fragment {
                 org.json.JSONArray poiArray;
                 try {
                     // ✅ 只用“上一句用户输入”
-                    poiArray = RouteGeneration.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
+                    poiArray = GeographyBot.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
                 } catch (Exception ex) {
                   //  Log.e(TAG, "Map_API_Certain 调用失败：", ex);
                     poiArray = new org.json.JSONArray();
@@ -1308,6 +1327,7 @@ public class ChatbotFragment extends Fragment {
         if(route!=null) Log.e(TAG,"喂给导航的路线点数量："+route.size());
         else  {Log.e(TAG,"喂给导航的路线点数量:0");}
         // 1) 切换到导航 UI（你已有的代码）
+        startNav=true;
         chatModeContainer.setVisibility(View.GONE);
         navigationModeContainer.setVisibility(View.VISIBLE);
         rvNav.setAdapter(chatAdapter);
@@ -2093,8 +2113,8 @@ public class ChatbotFragment extends Fragment {
 
 
 
-    @Override public void onResume() { super.onResume(); RouteGeneration.setTranscriptProvider(() -> buildFullTranscript(null)); }
-    @Override public void onPause()  { super.onPause();  RouteGeneration.setTranscriptProvider(null); }
+    @Override public void onResume() { super.onResume(); GeographyBot.setTranscriptProvider(() -> buildFullTranscript(null)); }
+    @Override public void onPause()  { super.onPause();  GeographyBot.setTranscriptProvider(null); }
 
 
 
@@ -2257,6 +2277,94 @@ public class ChatbotFragment extends Fragment {
         return out[0] >= minDeltaMeters || (System.currentTimeMillis() - lastTs) > cooldownMs;
     }
 
+
+    private void handleMediaRequest(){
+
+        postStatusToMastodonAsync(
+                "ATwVkRP6ZXAq31iOOJ9cYcAwKtmgL7aekrToeYzLqN4",                  // 建议重置后使用新的，不要硬编码进仓库
+                "今天的心得：最小参数 + 异步发帖（public）✅",
+                new MastoPostListener() {
+                    @Override public void onSuccess(@NonNull JSONObject resp) {
+                        // 可直接拿 URL：resp.optString("url")
+                        android.util.Log.i("Masto", "成功: " + resp.optString("url"));
+                    }
+                    @Override public void onFailure(@NonNull String err, @Nullable JSONObject resp) {
+                        android.util.Log.e("Masto", "失败: " + err + " " + (resp == null ? "" : resp.toString()));
+                    }
+                }
+        );
+
+    }
+
+    /** 发帖结果回调（已切回主线程） */
+    public interface MastoPostListener {
+        void onSuccess(@NonNull JSONObject resp);                 // 含 id、url、created_at、content 等
+        void onFailure(@NonNull String error, @Nullable JSONObject resp);
+    }
+
+    /**
+     * 最小参数异步发帖：
+     * - 实例固定为 https://mastodon.social
+     * - visibility 固定为 public
+     * - 绝不阻塞主线程（新线程发请求，回调切回主线程）
+     */
+    public static void postStatusToMastodonAsync(
+            @NonNull String accessToken,
+            @NonNull String statusText,
+            @NonNull MastoPostListener listener
+    ) {
+        final Handler main = new Handler(Looper.getMainLooper());
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            JSONObject json = null;
+            try {
+                final String url = "https://mastodon.social/api/v1/statuses";
+                final String body = "status=" + URLEncoder.encode(statusText, "UTF-8")
+                        + "&visibility=public";
+
+                URL u = new URL(url);
+                conn = (HttpURLConnection) u.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(15000);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                conn.setRequestProperty("Authorization", "Bearer " + accessToken);
+
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.getBytes(StandardCharsets.UTF_8));
+                }
+
+                final int code = conn.getResponseCode();
+                InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line).append('\n');
+                }
+                String resp = sb.toString();
+                json = new JSONObject(resp);
+
+                if (code < 200 || code >= 300) {
+                    final JSONObject j = json;
+                    main.post(() -> listener.onFailure("HTTP_" + code, j));
+                    return;
+                }
+                if (json.opt("id") == null) {
+                    final JSONObject j = json;
+                    main.post(() -> listener.onFailure("MASTO_BAD_RESP", j));
+                    return;
+                }
+                final JSONObject j = json;
+                main.post(() -> listener.onSuccess(j));
+            } catch (Throwable t) {
+                final JSONObject j = json;
+                main.post(() -> listener.onFailure("EXCEPTION:" + t.getClass().getSimpleName(), j));
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }).start();
+    }
 
 
 }

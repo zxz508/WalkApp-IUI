@@ -9,14 +9,12 @@ import static android.content.Context.MODE_PRIVATE;
 
 
 import static com.example.walkpromote22.Activities.MainActivity.isWeatherFetched;
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchPOIs;
+import static com.example.walkpromote22.ChatbotFragments.GeographyBot.fetchPOIs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 
 import android.animation.ObjectAnimator;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.graphics.drawable.Drawable;
-import android.graphics.drawable.LayerDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -37,8 +35,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -47,7 +43,6 @@ import androidx.fragment.app.Fragment;
 
 import com.amap.api.location.AMapLocationClient;
 import com.amap.api.maps.model.LatLng;
-import com.example.walkpromote22.Activities.MainActivity;
 import com.example.walkpromote22.ChatbotFragments.ChatbotFragment;
 import com.example.walkpromote22.R;
 import com.example.walkpromote22.data.dao.StepDao;

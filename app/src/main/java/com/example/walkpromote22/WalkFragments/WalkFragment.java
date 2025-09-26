@@ -1,7 +1,10 @@
 package com.example.walkpromote22.WalkFragments;
 
+import static com.example.walkpromote22.ChatbotFragments.ChatbotFragment.localConversationHistory;
+import static com.example.walkpromote22.ChatbotFragments.GeographyBot.httpGet;
+
 import android.os.Handler;
-import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -9,28 +12,34 @@ import androidx.annotation.Nullable;
 
 import com.amap.api.location.AMapLocationClient;
 import com.amap.api.maps.AMap;
-import com.amap.api.maps.CameraUpdateFactory;
 import com.amap.api.maps.model.BitmapDescriptorFactory;
 import com.amap.api.maps.model.LatLng;
 import com.amap.api.maps.model.Marker;
 import com.amap.api.maps.model.MarkerOptions;
 // imports（根据你项目补齐）
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Locale;
 import java.util.HashMap;
 import java.util.Map;
 
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
-
-import static com.example.walkpromote22.ChatbotFragments.RouteGeneration.fetchPOIs;
-import static com.example.walkpromote22.tool.MapTool.LocationToLatLng;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Color;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.ImageView;
@@ -56,16 +65,19 @@ import android.widget.Button;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 
-import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 public class WalkFragment extends Fragment {
     private long startTime;
@@ -108,7 +120,11 @@ public class WalkFragment extends Fragment {
 
 
     // 用户目标（你已经建好的 SmartGuide 类）
-    @Nullable private SmartGuide smartGuide = null;
+    @Nullable private AccompanyBot accompanyBot = null;
+// WalkFragment 字段区
+
+
+    private static final AtomicBoolean pendingTiredHint = new AtomicBoolean(false);
 
 
     private boolean halfwayEncouraged = false;           // 是否已在“过半”时鼓励过
@@ -217,6 +233,7 @@ public class WalkFragment extends Fragment {
             // 这里不要做重活（如网络请求），只做缓存即可
             checkHalfwayAndNotify();
             checkFinishAndNotify();
+            checkTiredAndNotify(sgLastLatLng);
         });
     }
 
@@ -620,7 +637,7 @@ public class WalkFragment extends Fragment {
 
 
         // 只用两份数据构造 SmartGuide
-        smartGuide = new SmartGuide(userInputs, routeArg);
+        accompanyBot = new AccompanyBot(userInputs, routeArg);
 
         sgRunning=true;
         setupSmartGuideBridge();
@@ -629,7 +646,7 @@ public class WalkFragment extends Fragment {
         startSmartGuideTicker();
     }
 
-    private SmartGuide.ActionSink sgSink;
+    private AccompanyBot.ActionSink sgSink;
     private com.amap.api.maps.model.LatLng lastFix = null;
     private static final long SG_TICK_MS = 20000L;
 
@@ -639,7 +656,7 @@ public class WalkFragment extends Fragment {
                 Log.e("TAG","sgRunning="+sgRunning);
                 if (!sgRunning) return;
 
-                final SmartGuide sg = smartGuide;
+                final AccompanyBot sg = accompanyBot;
                 final LatLng loc = sgLastLatLng;
                 if (sg == null || sgSink == null || loc == null) {
                     // 没就绪就下次再试
@@ -658,7 +675,7 @@ public class WalkFragment extends Fragment {
 
                     try {
                         // 2) 后台线程：运行 SmartGuide 逻辑（可能还会联网）
-                        sg.processTick(loc, null, sgSink,executorService);
+                        sg.processTick(loc, null, sgSink,executorService,context);
                     } catch (Throwable t) {
                         Log.e(TAG, "processTick failed (bg)", t);
                     }
@@ -677,7 +694,7 @@ public class WalkFragment extends Fragment {
 
     private void startSmartGuideTicker() {
         sgHandler.removeCallbacks(sgTickRunnable);
-        sgHandler.post(sgTickRunnable);//测试用！！！！！！！！！！
+       // sgHandler.post(sgTickRunnable);//测试用！！！！！！！！！！
         sgHandler.postDelayed(sgTickRunnable, SG_TICK_MS); // 需要立刻触发就改为 post(sgTickRunnable)
     }
     private void stopSmartGuideTicker() {
@@ -685,22 +702,29 @@ public class WalkFragment extends Fragment {
     }
     private final java.util.List<com.amap.api.maps.model.Marker> sgMarkers = new java.util.ArrayList<>();
     private void setupSmartGuideBridge() {
-        sgSink = new SmartGuide.ActionSink() {
+        sgSink = new AccompanyBot.ActionSink() {
             @Override
-            public void onAddMarker(double lat, double lng) {
+            public void onAddMarker(@Nullable String poiName,double lat, double lng) {
                 runOnUiThreadX(() -> {
                     AMap m = map();
                     if (m == null) return;
+
+                    String title = (poiName == null || poiName.trim().isEmpty()) ? "SmartGuide" : poiName.trim();
+
                     com.amap.api.maps.model.Marker mk = m.addMarker(
                             new com.amap.api.maps.model.MarkerOptions()
                                     .position(new com.amap.api.maps.model.LatLng(lat, lng))
-                                    .title("SmartGuide")
-                                    .snippet(String.format("%.6f, %.6f", lat, lng))
+                                    .title(title) // 用 POI 名称做标题
+                                    .snippet(String.format(java.util.Locale.US, "%.6f, %.6f", lat, lng))
                                     .anchor(0.5f, 1.0f)
                     );
                     sgMarkers.add(mk);
+
+
                 });
             }
+
+
 
             @Override
             public void onClearAllMarkers() {
@@ -730,20 +754,10 @@ public class WalkFragment extends Fragment {
                     }
                 });
             }
-
-            @Override
-            public void onAddText(String text, double lat, double lng) {
-                runOnUiThreadX(() -> addMessageOnMap(text, lat, lng));
-            }
-
-            @Override
-            public void onAddChatMessage(String text) {
-                sendMessageToChat(text);
-            }
         };
 
         // 🔑 别忘了真正把 sink 注入给 SmartGuide
-        smartGuide.setActionSink(sgSink);
+        accompanyBot.setActionSink(sgSink);
     }
 
     private void sendMessageToChat(String text) {
@@ -770,94 +784,6 @@ public class WalkFragment extends Fragment {
     private void runOnUiThreadX(Runnable r) {
         if (getActivity() == null) return;
         getActivity().runOnUiThread(r);
-    }
-
-
-
-
-
-
-
-
-
-
-    private void addMessageOnMap(@androidx.annotation.Nullable String text, double lat, double lng) {
-        requireActivity().runOnUiThread(() -> {
-            // 1) 聊天区输出
-            String msg = (text == null ? "" : text.trim());
-
-
-            // 2) 坐标兜底：不带坐标的 {Add_Text:message} 用当前定位
-            LatLng pos = null;
-            if (lat == 0d && lng == 0d) {
-                if (sgLastLatLng != null) pos = sgLastLatLng;
-            } else {
-                pos = new LatLng(lat, lng);
-            }
-            if (pos == null) return; // 没有可用坐标就只显示文本
-
-            // 3) 地图准备好？
-            if (mapTool == null || mapTool.getMapView() == null) return;
-            AMap aMap = mapTool.getMapView().getMap();
-            if (aMap == null) return;
-
-            // 4) 添加/更新 marker（title 用文本）
-            Marker mk = addOrUpdateMarker(aMap, pos, msg.isEmpty() ? "Info" : msg);
-
-            // 5) 展示 InfoWindow & 轻推相机
-            try { mk.showInfoWindow(); } catch (Exception ignore) {}
-
-        });
-    }
-
-    /** 在地图上按坐标添加或更新一个 marker，并登记到 liveMarkers */
-    private Marker addOrUpdateMarker(AMap aMap, LatLng pos, String title) {
-        String key = String.format(Locale.ROOT, "%.6f,%.6f", pos.latitude, pos.longitude);
-        Marker mk = liveMarkers.get(key);
-
-        if (mk == null) {
-            mk = aMap.addMarker(new MarkerOptions()
-                    .position(pos)
-                    .title(title == null ? "" : title)
-                    .anchor(0.5f, 1.0f)
-                    .zIndex(3000)
-                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED)));
-            liveMarkers.put(key, mk);
-
-            // 设置自定义信息窗口适配器
-            aMap.setInfoWindowAdapter(new AMap.InfoWindowAdapter() {
-                @Override
-                public View getInfoWindow(Marker marker) {
-                    return null; // 使用默认信息窗口背景
-                }
-
-                @Override
-                public View getInfoContents(Marker marker) {
-                    // 创建自定义布局
-                    View view = LayoutInflater.from(getContext()).inflate(R.layout.custom_info_window, null);
-                    TextView titleTextView = view.findViewById(R.id.info_window_title);
-
-                    // 处理标题中的换行符
-                    String title = marker.getTitle();
-                    if (title != null) {
-                        // 将特定的分隔符替换为换行符
-                        title = title.replace("\\n", "\n");
-                        titleTextView.setText(title);
-                    }
-
-                    return view;
-                }
-            });
-        } else {
-            // 更新标题
-            mk.setTitle(title == null ? "" : title);
-            mk.setPosition(pos);
-        }
-
-        // 显示信息窗口（如果需要一直显示）
-        mk.showInfoWindow();
-
-        return mk;
     }
 
 
@@ -903,13 +829,6 @@ public class WalkFragment extends Fragment {
         }
     }
     // 生成结束事件的 payload 数据
-    private String buildFinishPayload(double walked, long duration) {
-        long w = Math.round(walked), t = Math.round(plannedRouteDistanceMeters);
-        return "[APP_EVENT] WALK_FINISHED\n"
-                + "walked_m=" + w + ", total_m=" + t
-                + "\nTotal time: " + formatTime(duration)
-                + "\nThe user has completed the walk!";
-    }
 
     // 格式化时间为时:分:秒
     private String formatTime(long durationSeconds) {
@@ -956,6 +875,14 @@ public class WalkFragment extends Fragment {
                 + "walked_m=" + w + ", total_m=" + t
                 + (lastLatLng != null ? (", last=" + String.valueOf(lastLatLng)) : "")
                 + "\nThe user is already halfway there, so you might want to give them some encouragement.";
+    }
+    private String buildFinishPayload(double walked, long duration) {
+        long w = Math.round(walked), t = Math.round(plannedRouteDistanceMeters);
+        return "[APP_EVENT] WALK_FINISHED\n"
+                + "walked_m=" + w + ", total_m=" + t
+                + "\nTotal time: " + formatTime(duration)
+                + "\nThe user has completed the walk!" +
+                "You can ask user whether he is willing to upload the record to the social media, if yes , respond with {Media_API} to do so";
     }
 
 
@@ -1174,6 +1101,164 @@ public class WalkFragment extends Fragment {
         android.location.Location.distanceBetween(lat1, lon1, lat2, lon2, res);
         return res[0];
     }
+
+
+    // 放在 WalkFragment 类内部（字段区）
+    /** ——【疲劳检测参数，可按需调整】—— */
+    private static final long TIRED_WINDOW_MS = 2 * 60_000L;          // 观察窗口：2 分钟
+    private static final float TIRED_DISTANCE_THRESHOLD_M = 20f;      // 总位移阈值：20 米
+    private static final long TIRED_NOTIFY_COOLDOWN_MS = 10 * 60_000L;// 冷却时间：10 分钟，避免频繁提醒
+    private static final int  TIRED_MIN_SAMPLES = 6;                  // 至少采样次数，避免抖动误判
+
+    /** ——【内部状态】—— */
+    private final Deque<LocSample> tiredWindow = new ArrayDeque<>();
+    private long lastTiredNotifyAt = 0L;
+
+
+    /** 可选：如果你已有 ChatbotFragment 实例，也可以直接在这里持有引用而不用回调 */
+// private ChatbotFragment chatbotFragment;
+
+    private static final class LocSample {
+        final long t;          // monotonic 时间
+        final LatLng latLng;
+        LocSample(long t, LatLng ll) { this.t = t; this.latLng = ll; }
+    }
+
+    // 放在 WalkFragment 类内部（方法区）
+    /** 对外暴露：设置把系统事件发往 ChatbotFragment 的通道 */
+
+
+/** 若你不方便用 Consumer，可改成自定义接口：
+ public interface ChatbotNotifier { void notifyChatbot(String eventJson); }
+ 并把字段/方法类型一起替换为 ChatbotNotifier。
+ */
+
+    /** 距离计算（米） */
+    /** 使用 Haversine 公式计算两点间球面距离（米） */
+    private static float distanceMeters(@NonNull LatLng a, @NonNull LatLng b) {
+        final double R = 6371000.0; // 地球半径，单位：米
+
+        double lat1 = Math.toRadians(a.latitude);
+        double lon1 = Math.toRadians(a.longitude);
+        double lat2 = Math.toRadians(b.latitude);
+        double lon2 = Math.toRadians(b.longitude);
+
+        double dLat = lat2 - lat1;
+        double dLon = lon2 - lon1;
+
+        double hav = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(lat1) * Math.cos(lat2)
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+        double c = 2 * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav));
+
+        return (float) (R * c);
+    }
+
+
+    /**
+     * 每次定位回调/每次 tick 调用本方法即可。
+     * 逻辑：
+     * 1) 将当前点加入滑动窗口（按 TIRED_WINDOW_MS 保留）
+     * 2) 若采样数足够且窗口覆盖足够时间，并且窗口内最大位移 <= 阈值 => 触发“累了”事件
+     * 3) 通过 chatbotEventSink 发送 JSON 事件到 ChatbotFragment
+     */
+    public void checkTiredAndNotify(@NonNull LatLng currentLoc) {
+        final long now = SystemClock.elapsedRealtime();
+
+        // 1) 记录样本
+        tiredWindow.addLast(new LocSample(now, currentLoc));
+
+        // 仅保留时间窗内的样本
+        final long cut = now - TIRED_WINDOW_MS;
+        while (!tiredWindow.isEmpty() && tiredWindow.peekFirst().t < cut) {
+            tiredWindow.removeFirst();
+        }
+
+        // 样本不足，不判定
+        if (tiredWindow.size() < TIRED_MIN_SAMPLES) return;
+
+        // 窗口是否覆盖足够时长（起点~现在 >= 窗口）
+        LocSample first = tiredWindow.peekFirst();
+        if (first == null || (now - first.t) < TIRED_WINDOW_MS * 0.9) { // 给点余量
+            return;
+        }
+
+        // 冷却中不重复发送
+        if (now - lastTiredNotifyAt < TIRED_NOTIFY_COOLDOWN_MS) return;
+
+        // 2) 核心判定：窗口内“最大半径位移”是否小于阈值
+        // 以当前点为中心，计算窗口内所有点到当前点的最大距离
+        float rMax = 0f;
+        for (LocSample s : tiredWindow) {
+            rMax = Math.max(rMax, distanceMeters(s.latLng, currentLoc));
+        }
+
+        if (rMax <= TIRED_DISTANCE_THRESHOLD_M) {
+            lastTiredNotifyAt = now;
+            pendingTiredHint.compareAndSet(false, true);
+            // 3) 组织一个系统事件（JSON），发送给 ChatbotFragment
+            try {
+                JSONObject evt = new JSONObject();
+                evt.put("type", "system_event");
+                evt.put("event", "user_tired");
+                evt.put("source", "WalkFragment");
+                evt.put("window_sec", TIRED_WINDOW_MS / 1000);
+                evt.put("radius_m_max", rMax);
+                evt.put("threshold_m", TIRED_DISTANCE_THRESHOLD_M);
+                evt.put("timestamp_ms", now);
+
+                // 你也可以在这里加上用户最近路线/步数等上下文信息
+                String eventJson = evt.toString();
+                String payload="The user may get tired now, please give the user some care and encouragement." +
+                        "Later, API will search for nearby POIs that can help users relieve tiredness and mark them on the map(Such as supermarkets, coffee shops, milk tea shops and so on)";
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("payload", payload);
+                getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);
+                // 如果你手里有 ChatbotFragment 实例，可直接调用它的方法：
+                // if (chatbotFragment != null) chatbotFragment.appendSystemEvent(eventJson);
+
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * 如果 pendingTiredHint 为 true，则把“用户疲惫了...”提示注入到发送给 AccompanyBot 的下一条消息中，
+     * 然后自动清零（只生效一次）。
+     * - 若原始 payload 是 JSON（对象/数组），优先在对象里加 system_hints 数组与 priority_task；
+     * - 若不是 JSON，就把提示文本前置拼接。
+     */
+    public static String injectTiredHintIfNeeded(String originalPayload) {
+        if (!pendingTiredHint.getAndSet(false)) return originalPayload; // 没有待注入，直接返回
+
+        final String hint = "The user is tired, mark the nearby coffee shops, supermarkets, milk tea shops, etc. on the map to help the user relieve fatigue";
+
+        try {
+            // 尝试按 JSON 对象处理
+            org.json.JSONObject obj = new org.json.JSONObject(originalPayload);
+            org.json.JSONArray hints = obj.optJSONArray("system_hints");
+            if (hints == null) {
+                hints = new org.json.JSONArray();
+                obj.put("system_hints", hints);
+            }
+            hints.put(hint);
+            // 可选：给 AccompanyBot 一个轻量任务标签，便于你的 prompt 侧路由
+            obj.put("priority_task", "relief_POI_marking");
+            return obj.toString();
+        } catch (Exception e1) {
+            // 若不是对象，试试数组
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(originalPayload);
+                // 将提示放到数组第一个元素，若你的协议是 messages[] 之类可按需改造
+                arr.put(0, hint);
+                return arr.toString();
+            } catch (Exception e2) {
+                // 都不是 JSON，就直接前置拼接
+                return hint + "\n" + (originalPayload == null ? "" : originalPayload);
+            }
+        }
+    }
+
 
 
 

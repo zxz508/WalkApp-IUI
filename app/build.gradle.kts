@@ -1,3 +1,7 @@
+
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)  // 使用 Version Catalog
     id("org.jetbrains.kotlin.android") version "1.9.0" apply true
@@ -6,12 +10,19 @@ plugins {
 
 
 }
-
+// 读取 local.properties（若不存在则回退到环境变量/空串）
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) FileInputStream(f).use { load(it) }
+}
+val mastoToken: String = (localProps.getProperty("MASTO_TOKEN")
+    ?: System.getenv("MASTO_TOKEN") ?: "").trim()
 
 android {
     namespace = "com.example.walkpromote22"
     compileSdk = 35
 
+    buildFeatures { buildConfig = true } // 库模块需要
     defaultConfig {
 
         applicationId = "com.example.walkpromote22"
@@ -21,7 +32,9 @@ android {
         versionName = "1.0"
 
 
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "MASTO_TOKEN", "\"${mastoToken}\"")
     }
 
     buildTypes {

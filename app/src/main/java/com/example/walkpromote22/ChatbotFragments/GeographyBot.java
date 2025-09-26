@@ -43,7 +43,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -59,7 +58,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.zip.GZIPInputStream;
 
@@ -67,7 +65,7 @@ import java.util.zip.GZIPInputStream;
 /**
  * 步行路线生成工具（支持 GPT 多途径点）
  */
-public class RouteGeneration {
+public class GeographyBot {
     public static LatLng location;
     public static String response;
 
@@ -895,7 +893,7 @@ public class RouteGeneration {
     /* =========================================================
      *  HTTP GET
      * ========================================================= */
-    private static JSONObject httpGet(String url) throws Exception {
+    public static JSONObject httpGet(String url) throws Exception {
         final int maxRetry = 2; // 允许超时重试 2 次（共最多 3 次）
         int attempt = 0;
 
@@ -1041,7 +1039,7 @@ public class RouteGeneration {
 
     private static void throttleGate() {
         if (!ENABLE_THROTTLE) return;
-        synchronized (RouteGeneration.class) {
+        synchronized (GeographyBot.class) {
             long diff = System.currentTimeMillis() - lastRequestTime;
             if (diff < MIN_INTERVAL_MS) {
                 try { Thread.sleep(MIN_INTERVAL_MS - diff); } catch (InterruptedException ignore) {}
