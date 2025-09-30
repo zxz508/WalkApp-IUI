@@ -9,7 +9,7 @@ import static android.content.Context.MODE_PRIVATE;
 
 
 import static com.example.walkpromote22.Activities.MainActivity.isWeatherFetched;
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.fetchPOIs;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchPOIs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 
 import android.animation.ObjectAnimator;
@@ -97,18 +97,20 @@ public class TodayFragment extends Fragment {
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
     private enum ProviderType { GOOGLE, SAMSUNG, HUAWEI, LOCAL, UNKNOWN }
-    private ProviderType currentProvider = ProviderType.UNKNOWN;
     private ProgressBar progressBar;
 
+    private volatile boolean destroyed = false;
 
-    private static Activity mActivity = null;
-    private static Context mContext = null;
+    // 用于看门狗超时控制（与现有 executorService 并存）
+    private java.util.concurrent.ScheduledExecutorService timeoutScheduler =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
 
-    private UserPreferences userPref;
-    //text
-// ★ 新增：主线程 Handler
+    // 可选：记录各阶段的超时任务句柄，便于销毁时取消
+    @Nullable private java.util.concurrent.ScheduledFuture<?> locationTimeoutFuture;
+    @Nullable private java.util.concurrent.ScheduledFuture<?> poiTimeoutFuture;
+    @Nullable private java.util.concurrent.ScheduledFuture<?> weatherCodeTimeoutFuture;
+    @Nullable private java.util.concurrent.ScheduledFuture<?> weatherFetchTimeoutFuture;
 
-    private boolean stepFeatureEnabled = true;
 
 
 
@@ -156,8 +158,11 @@ public class TodayFragment extends Fragment {
             } catch (Throwable t) {
                 Log.e(TAG, "bind views failed", t);
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "界面初始化异常",
-                            "部分控件初始化失败，相关展示将被禁用。", t); } catch (Throwable ignore) {}
+                    try {
+                        showErrorDialog(ctx, "界面初始化异常",
+                                "部分控件初始化失败，相关展示将被禁用。", t);
+                    } catch (Throwable ignore) {
+                    }
                 }
             }
 
@@ -171,8 +176,11 @@ public class TodayFragment extends Fragment {
             } catch (Throwable t) {
                 Log.e(TAG, "DB/DAO re-init failed", t);
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "数据库异常",
-                            "访问数据库失败，历史与统计功能将受限。", t); } catch (Throwable ignore) {}
+                    try {
+                        showErrorDialog(ctx, "数据库异常",
+                                "访问数据库失败，历史与统计功能将受限。", t);
+                    } catch (Throwable ignore) {
+                    }
                 }
             }
 
@@ -190,8 +198,11 @@ public class TodayFragment extends Fragment {
                 Log.e(TAG, "read userKey from SharedPreferences failed", t);
                 userKey = "default_user";
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "用户信息读取失败",
-                            "已使用默认用户继续运行。", t); } catch (Throwable ignore) {}
+                    try {
+                        showErrorDialog(ctx, "用户信息读取失败",
+                                "已使用默认用户继续运行。", t);
+                    } catch (Throwable ignore) {
+                    }
                 }
             }
 
@@ -203,8 +214,11 @@ public class TodayFragment extends Fragment {
             } catch (Throwable t) {
                 Log.e(TAG, "loadTodayData failed", t);
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "加载今日数据失败",
-                            "今日统计展示已临时禁用。", t); } catch (Throwable ignore) {}
+                    try {
+                        showErrorDialog(ctx, "加载今日数据失败",
+                                "今日统计展示已临时禁用。", t);
+                    } catch (Throwable ignore) {
+                    }
                 }
             }
 
@@ -223,26 +237,39 @@ public class TodayFragment extends Fragment {
 
                             // 这些方法可能触 UI，确保在主线程且 fragment 仍附着
                             if (isAdded()) {
-                                try { loadDataFromDatabase(selectedDate); } catch (Throwable t1) {
+                                try {
+                                    loadDataForDate(selectedDate);
+                                } catch (Throwable t1) {
                                     Log.e(TAG, "loadDataFromDatabase failed", t1);
                                     if (getContext() != null) {
-                                        try { showErrorDialog(getContext(), "读取历史失败",
-                                                "无法读取所选日期的数据。", t1); } catch (Throwable ignore) {}
+                                        try {
+                                            showErrorDialog(getContext(), "读取历史失败",
+                                                    "无法读取所选日期的数据。", t1);
+                                        } catch (Throwable ignore) {
+                                        }
                                     }
                                 }
-                                try { loadDataForDate(selectedDate); } catch (Throwable t2) {
+                                try {
+                                    loadDataForDate(selectedDate);
+                                } catch (Throwable t2) {
                                     Log.e(TAG, "loadDataForDate failed", t2);
                                     if (getContext() != null) {
-                                        try { showErrorDialog(getContext(), "加载展示失败",
-                                                "无法展示所选日期的数据图表。", t2); } catch (Throwable ignore) {}
+                                        try {
+                                            showErrorDialog(getContext(), "加载展示失败",
+                                                    "无法展示所选日期的数据图表。", t2);
+                                        } catch (Throwable ignore) {
+                                        }
                                     }
                                 }
                             }
                         } catch (Throwable tSel) {
                             Log.e(TAG, "onDateChange failed", tSel);
                             if (getContext() != null) {
-                                try { showErrorDialog(getContext(), "日期选择异常",
-                                        "无法解析或加载所选日期的数据。", tSel); } catch (Throwable ignore) {}
+                                try {
+                                    showErrorDialog(getContext(), "日期选择异常",
+                                            "无法解析或加载所选日期的数据。", tSel);
+                                } catch (Throwable ignore) {
+                                }
                             }
                         }
                     });
@@ -250,8 +277,11 @@ public class TodayFragment extends Fragment {
             } catch (Throwable t) {
                 Log.e(TAG, "calendar init failed", t);
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "日历初始化失败",
-                            "日历功能不可用。", t); } catch (Throwable ignore) {}
+                    try {
+                        showErrorDialog(ctx, "日历初始化失败",
+                                "日历功能不可用。", t);
+                    } catch (Throwable ignore) {
+                    }
                 }
             }
 
@@ -263,7 +293,9 @@ public class TodayFragment extends Fragment {
                             User user = userDao.getUserByKey(userKey);
                             if (user == null) {
                                 user = new User(userKey, "--", 0f, 0f, 0);
-                                try { userDao.insert(user); } catch (Throwable tIns) {
+                                try {
+                                    userDao.insert(user);
+                                } catch (Throwable tIns) {
                                     Log.e(TAG, "insert user failed", tIns);
                                 }
                             }
@@ -277,11 +309,16 @@ public class TodayFragment extends Fragment {
                                         if (!isAdded()) return;
                                         String todayStr = new SimpleDateFormat(
                                                 "yyyy-MM-dd", Locale.getDefault()).format(new Date());
-                                        try { loadDataFromDatabase(todayStr); } catch (Throwable tL) {
+                                        try {
+                                            loadDataForDate(todayStr);
+                                        } catch (Throwable tL) {
                                             Log.e(TAG, "loadDataFromDatabase(today) failed", tL);
                                             if (getContext() != null) {
-                                                try { showErrorDialog(getContext(), "今日数据加载失败",
-                                                        "部分统计展示已禁用。", tL); } catch (Throwable ignore) {}
+                                                try {
+                                                    showErrorDialog(getContext(), "今日数据加载失败",
+                                                            "部分统计展示已禁用。", tL);
+                                                } catch (Throwable ignore) {
+                                                }
                                             }
                                         }
                                     } catch (Throwable tPost) {
@@ -294,8 +331,11 @@ public class TodayFragment extends Fragment {
                         } catch (Throwable tDb) {
                             Log.e(TAG, "userDao get/insert failed", tDb);
                             if (getContext() != null) {
-                                try { showErrorDialog(getContext(), "用户数据异常",
-                                        "无法读取/写入用户信息，统计功能受限。", tDb); } catch (Throwable ignore) {}
+                                try {
+                                    showErrorDialog(getContext(), "用户数据异常",
+                                            "无法读取/写入用户信息，统计功能受限。", tDb);
+                                } catch (Throwable ignore) {
+                                }
                             }
                         }
                     });
@@ -313,169 +353,238 @@ public class TodayFragment extends Fragment {
             } catch (Throwable t) {
                 Log.e(TAG, "AMap privacy calls failed", t);
                 if (canUseCtx) {
-                    try { showErrorDialog(ctx, "定位隐私初始化失败",
-                            "高德定位隐私初始化失败，定位功能已禁用。", t); } catch (Throwable ignore) {}
-                }
-            }
-
-            // —— 定位 + POI + 天气（放子线程，所有回调用 getContext() 判空；一旦异常即停止后续链路）
-            try {
-                new Thread(() -> {
                     try {
-                        final Context c0 = getContext();
-                        if (c0 == null || !isAdded()) return;
-
-                        getCurrentLocation(true, c0, new ChatbotFragment.LocationCallback() {
-                            @Override
-                            public void onLocationReceived(LatLng location) throws Exception {
-                                try {
-                                    Context c1 = getContext();
-                                    if (c1 == null || !isAdded()) return;
-
-                                    // 保存位置
-                                    try {
-                                        SharedPreferences prefs = c1.getSharedPreferences("AppData", MODE_PRIVATE);
-                                        prefs.edit()
-                                                .putString("location_lat", String.valueOf(location.latitude))
-                                                .putString("location_long", String.valueOf(location.longitude))
-                                                .apply();
-                                        Log.e("App Startup", "定位成功：" + location.latitude + ", " + location.longitude);
-                                    } catch (Throwable t) {
-                                        Log.e(TAG, "save location failed", t);
-                                    }
-
-                                    // 获取 POI
-                                    try {
-                                        fetchPOIs(c1, location, 5000);
-                                    } catch (Throwable tPoi) {
-                                        Log.e(TAG, "fetchPOIs failed", tPoi);
-                                        try {
-                                            showErrorDialog(c1, "POI 获取失败",
-                                                    "附近兴趣点获取失败，相关推荐功能已禁用。", tPoi);
-                                        } catch (Throwable ignore) {}
-                                    }
-
-                                    if(!isWeatherFetched) {
-                                        isWeatherFetched=true;
-                                        // 获取天气
-                                        try {
-                                            WeatherTool.getCityCodeFromLatLng(c1, location, new WeatherTool.CityCodeCallback() {
-                                                @Override
-                                                public void onCodeResolved(String cityCode) {
-                                                    try {
-                                                        final Context c2 = getContext();
-                                                        if (c2 == null || !isAdded()) return;
-                                                        WeatherTool.fetchWeatherWithCode(cityCode, new WeatherTool.WeatherCallback() {
-                                                            @Override
-                                                            public void onWeatherReceived(String weatherInfo) {
-                                                                try {
-                                                                    Context c3 = getContext();
-                                                                    if (c3 == null || !isAdded())
-                                                                        return;
-                                                                    SharedPreferences prefs = c3.getSharedPreferences("AppData", MODE_PRIVATE);
-                                                                    prefs.edit().putString("weather", weatherInfo).apply();
-                                                                    Log.e("App Startup", "天气信息获取成功：" + weatherInfo);
-                                                                } catch (Throwable t) {
-                                                                    Log.e(TAG, "save weather failed", t);
-                                                                }
-                                                            }
-
-                                                            @Override
-                                                            public void onError(String errorMessage) {
-                                                                Log.e("App Startup", "天气请求失败：" + errorMessage);
-                                                                try {
-                                                                    Context c3 = getContext();
-                                                                    if (c3 != null && isAdded()) {
-                                                                        showErrorDialog(c3, "天气获取失败",
-                                                                                "天气接口返回错误：" + errorMessage, null);
-                                                                    }
-                                                                } catch (Throwable ignore) {
-                                                                }
-                                                            }
-                                                        });
-                                                    } catch (Throwable tW) {
-                                                        Log.e(TAG, "fetchWeatherWithCode failed", tW);
-                                                        Context c2 = getContext();
-                                                        if (c2 != null && isAdded()) {
-                                                            try {
-                                                                showErrorDialog(c2, "天气解析失败",
-                                                                        "解析城市编码/天气失败。", tW);
-                                                            } catch (Throwable ignore) {
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                @Override
-                                                public void onError(String message) {
-                                                    Log.e("App Startup", "获取城市编码失败：" + message);
-                                                    Context c2 = getContext();
-                                                    if (c2 != null && isAdded()) {
-                                                        try {
-                                                            showErrorDialog(c2, "城市编码失败",
-                                                                    "无法根据位置获取城市编码：" + message, null);
-                                                        } catch (Throwable ignore) {
-                                                        }
-                                                    }
-                                                }
-                                            });
-                                        } catch (Throwable tCode) {
-                                            Log.e(TAG, "getCityCodeFromLatLng failed", tCode);
-                                        }
-                                    }
-
-                                } catch (Throwable tAll) {
-                                    Log.e(TAG, "onLocationReceived pipeline failed", tAll);
-                                    Context c1 = getContext();
-                                    if (c1 != null && isAdded()) {
-                                        try { showErrorDialog(c1, "定位后处理异常",
-                                                "定位成功但后续处理出错，相关功能已降级。", tAll); } catch (Throwable ignore) {}
-                                    }
-                                }
-                            }
-
-                            @Override
-                            public void onLocationFailed(String error) {
-                                Log.e("App Startup", "定位失败：" + error);
-                                Context c1 = getContext();
-                                if (c1 != null && isAdded()) {
-                                    try { showErrorDialog(c1, "定位失败",
-                                            "无法获取当前位置：" + error, null); } catch (Throwable ignore) {}
-                                }
-                            }
-                        });
-                    } catch (Throwable t) {
-                        Log.e("App Startup", "位置请求异常：" + t.getMessage(), t);
-                        Context c = getContext();
-                        if (c != null && isAdded()) {
-                            try { showErrorDialog(c, "位置请求异常",
-                                    "定位线程发生异常，定位功能已禁用。", t); } catch (Throwable ignore) {}
-                        }
+                        showErrorDialog(ctx, "定位隐私初始化失败",
+                                "高德定位隐私初始化失败，定位功能已禁用。", t);
+                    } catch (Throwable ignore) {
                     }
-                }).start();
-            } catch (Throwable t) {
-                Log.e(TAG, "start location thread failed", t);
-                if (canUseCtx) {
-                    try { showErrorDialog(ctx, "定位初始化失败",
-                            "无法启动定位线程，定位相关功能已禁用。", t); } catch (Throwable ignore) {}
                 }
             }
 
-            // —— 记录上下文检查（调试用）
-            try {
-                Log.e("err", "context=" + (canUseCtx ? ctx : "null or not added"));
-            } catch (Throwable ignore) {}
+            // —— 定位 + POI + 天气（统一入口，内置超时与取消）
+            startLocationPoiWeatherWithTimeouts();
+        
 
-        } catch (Throwable tOuter) {
-            Log.e(TAG, "onCreateView fatal", tOuter);
-            if (getContext() != null) {
-                try { showErrorDialog(getContext(), "界面创建异常",
-                        "onCreateView 发生未预期错误。", tOuter); } catch (Throwable ignore) {}
-            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
 
         return rootView;
     }
+    /** 统一启动“定位→POI→天气”，每一步都加超时与取消，避免链路悬挂导致 ANR */
+    private void startLocationPoiWeatherWithTimeouts() throws Exception {
+        if (!isAdded()) return;
+        final Context ctx = getContext();
+        if (ctx == null) return;
+
+        // —— 1) 定位：6s 超时 —— //
+        final java.util.concurrent.atomic.AtomicBoolean locationDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        if (timeoutScheduler == null || timeoutScheduler.isShutdown()) {
+            timeoutScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        }
+        locationTimeoutFuture = timeoutScheduler.schedule(() -> {
+            if (locationDone.compareAndSet(false, true)) {
+                android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                main.post(() -> {
+                    if (!isAdded() || destroyed) return;
+                    android.widget.Toast.makeText(ctx, "定位超时，请稍后再试", android.widget.Toast.LENGTH_SHORT).show();
+                });
+                // 定位超时则直接中断后续链路
+                android.util.Log.e(TAG, "定位超时（6s），中止后续 POI/天气");
+            }
+        }, 6, java.util.concurrent.TimeUnit.SECONDS);
+
+        getCurrentLocation(true, ctx, new com.example.walkpromote22.ChatbotFragments.ChatbotFragment.LocationCallback() {
+            @Override public void onLocationReceived(com.amap.api.maps.model.LatLng location) {
+                if (!locationDone.compareAndSet(false, true)) return; // 已经超时/处理过
+                if (locationTimeoutFuture != null) locationTimeoutFuture.cancel(false);
+
+                if (!isAdded() || destroyed) return;
+                Context c1 = getContext();
+                if (c1 == null) return;
+
+                // 保存位置（后台线程也可）
+                try {
+                    android.content.SharedPreferences prefs = c1.getSharedPreferences("AppData", android.content.Context.MODE_PRIVATE);
+                    prefs.edit()
+                            .putString("location_lat", String.valueOf(location.latitude))
+                            .putString("location_long", String.valueOf(location.longitude))
+                            .apply();
+                } catch (Throwable t) {
+                    android.util.Log.e(TAG, "save location failed", t);
+                }
+
+                // —— 2) POI：后台执行 + 5s 超时（可取消 Future） —— //
+                final java.util.concurrent.atomic.AtomicBoolean poiDone =
+                        new java.util.concurrent.atomic.AtomicBoolean(false);
+
+                java.util.concurrent.Future<?> poiFuture = executorService.submit(() -> {
+                    try {
+                        // 你原来的同步方法：fetchPOIs(c1, location, 5000);
+                        com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchPOIs(c1, location, 5000);
+                    } catch (Throwable t) {
+                        android.util.Log.e(TAG, "fetchPOIs failed", t);
+                        android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                        main.post(() -> {
+                            if (!isAdded() || destroyed) return;
+                            try {
+                                showErrorDialog(c1, "POI 获取失败", "附近兴趣点获取失败，相关推荐将暂不可用。", t);
+                            } catch (Throwable ignored) {}
+                        });
+                    } finally {
+                        poiDone.set(true);
+                    }
+                });
+
+                poiTimeoutFuture = timeoutScheduler.schedule(() -> {
+                    if (poiDone.compareAndSet(false, true)) {
+                        poiFuture.cancel(true); // 尝试中断
+                        android.util.Log.e(TAG, "POI 获取超时（5s），已取消");
+                        android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                        main.post(() -> {
+                            if (!isAdded() || destroyed) return;
+                            android.widget.Toast.makeText(c1, "附近 POI 获取超时", android.widget.Toast.LENGTH_SHORT).show();
+                        });
+                    }
+                }, 5, java.util.concurrent.TimeUnit.SECONDS);
+
+                // 异步等待以便在完成时取消超时看门狗（不阻塞 UI）
+                executorService.execute(() -> {
+                    try { poiFuture.get(); } catch (Throwable ignore) {}
+                    finally {
+                        if (poiTimeoutFuture != null) poiTimeoutFuture.cancel(false);
+                    }
+                });
+
+                // —— 3) 天气：仅未拉取过时发起；城市编码 5s 超时，天气 6s 超时 —— //
+                if (!com.example.walkpromote22.Activities.MainActivity.isWeatherFetched) {
+                    com.example.walkpromote22.Activities.MainActivity.isWeatherFetched = true;
+
+                    final java.util.concurrent.atomic.AtomicBoolean codeDone =
+                            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+                    weatherCodeTimeoutFuture = timeoutScheduler.schedule(() -> {
+                        if (codeDone.compareAndSet(false, true)) {
+                            android.util.Log.e(TAG, "城市编码解析超时（5s）");
+                            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                            main.post(() -> {
+                                if (!isAdded() || destroyed) return;
+                                android.widget.Toast.makeText(c1, "天气城市编码超时", android.widget.Toast.LENGTH_SHORT).show();
+                            });
+                        }
+                    }, 5, java.util.concurrent.TimeUnit.SECONDS);
+
+                    com.example.walkpromote22.tool.WeatherTool.getCityCodeFromLatLng(c1, location,
+                            new com.example.walkpromote22.tool.WeatherTool.CityCodeCallback() {
+                                @Override public void onCodeResolved(String cityCode) {
+                                    if (!codeDone.compareAndSet(false, true)) return;
+                                    if (weatherCodeTimeoutFuture != null) weatherCodeTimeoutFuture.cancel(false);
+
+                                    final java.util.concurrent.atomic.AtomicBoolean weatherDone =
+                                            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+                                    weatherFetchTimeoutFuture = timeoutScheduler.schedule(() -> {
+                                        if (weatherDone.compareAndSet(false, true)) {
+                                            android.util.Log.e(TAG, "天气获取超时（6s）");
+                                            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                                            main.post(() -> {
+                                                if (!isAdded() || destroyed) return;
+                                                android.widget.Toast.makeText(c1, "天气获取超时", android.widget.Toast.LENGTH_SHORT).show();
+                                            });
+                                        }
+                                    }, 6, java.util.concurrent.TimeUnit.SECONDS);
+
+                                    com.example.walkpromote22.tool.WeatherTool.fetchWeatherWithCode(cityCode,
+                                            new com.example.walkpromote22.tool.WeatherTool.WeatherCallback() {
+                                                @Override public void onWeatherReceived(String weatherInfo) {
+                                                    if (!weatherDone.compareAndSet(false, true)) return;
+                                                    if (weatherFetchTimeoutFuture != null) weatherFetchTimeoutFuture.cancel(false);
+
+                                                    Context c3 = getContext();
+                                                    if (c3 == null || !isAdded() || destroyed) return;
+                                                    try {
+                                                        android.content.SharedPreferences prefs = c3.getSharedPreferences("AppData", android.content.Context.MODE_PRIVATE);
+                                                        prefs.edit().putString("weather", weatherInfo).apply();
+                                                        android.util.Log.e("App Startup", "天气信息获取成功：" + weatherInfo);
+                                                    } catch (Throwable t) {
+                                                        android.util.Log.e(TAG, "save weather failed", t);
+                                                    }
+                                                }
+
+                                                @Override public void onError(String errorMessage) {
+                                                    if (!weatherDone.compareAndSet(false, true)) return;
+                                                    if (weatherFetchTimeoutFuture != null) weatherFetchTimeoutFuture.cancel(false);
+
+                                                    android.util.Log.e("App Startup", "天气请求失败：" + errorMessage);
+                                                    android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                                                    main.post(() -> {
+                                                        if (!isAdded() || destroyed) return;
+                                                        try {
+                                                            showErrorDialog(c1, "天气获取失败", "天气接口返回错误：" + errorMessage, null);
+                                                        } catch (Throwable ignored) {}
+                                                    });
+                                                }
+                                            });
+                                }
+
+                                @Override public void onError(String message) {
+                                    if (!codeDone.compareAndSet(false, true)) return;
+                                    if (weatherCodeTimeoutFuture != null) weatherCodeTimeoutFuture.cancel(false);
+
+                                    android.util.Log.e("App Startup", "获取城市编码失败：" + message);
+                                    android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                                    main.post(() -> {
+                                        if (!isAdded() || destroyed) return;
+                                        try {
+                                            showErrorDialog(c1, "城市编码失败", "无法根据位置获取城市编码：" + message, null);
+                                        } catch (Throwable ignored) {}
+                                    });
+                                }
+                            });
+                }
+            }
+
+            @Override public void onLocationFailed(String error) {
+                if (!locationDone.compareAndSet(false, true)) return;
+                if (locationTimeoutFuture != null) locationTimeoutFuture.cancel(false);
+
+                android.util.Log.e("App Startup", "定位失败：" + error);
+                if (!isAdded() || destroyed) return;
+                Context c1 = getContext();
+                if (c1 != null) {
+                    try { showErrorDialog(c1, "定位失败", "无法获取当前位置：" + error, null); } catch (Throwable ignored) {}
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        destroyed = true;
+        try {
+            if (progressBar != null) progressBar.clearAnimation();
+        } catch (Throwable ignore) {}
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        destroyed = true;
+
+        // 取消看门狗超时任务
+        try { if (locationTimeoutFuture != null) locationTimeoutFuture.cancel(true); } catch (Throwable ignore) {}
+        try { if (poiTimeoutFuture != null) poiTimeoutFuture.cancel(true); } catch (Throwable ignore) {}
+        try { if (weatherCodeTimeoutFuture != null) weatherCodeTimeoutFuture.cancel(true); } catch (Throwable ignore) {}
+        try { if (weatherFetchTimeoutFuture != null) weatherFetchTimeoutFuture.cancel(true); } catch (Throwable ignore) {}
+
+        // 关闭调度器与后台线程池
+        try { if (timeoutScheduler != null) timeoutScheduler.shutdownNow(); } catch (Throwable ignore) {}
+        try { if (executorService != null) executorService.shutdownNow(); } catch (Throwable ignore) {}
+    }
+
 
     // 放到同一个 Fragment 类里即可
     private void showErrorDialog(Context ctx, String title, String message, @Nullable Throwable t) {
@@ -658,75 +767,44 @@ public class TodayFragment extends Fragment {
 
 
 
-    /** 读取日历选中的某一天数据（线程安全处理） */
-    private void loadDataForDate(final String ymd) {
-
-
-
-        /* —— 1. 后台线程读取数据库 —— */
+    private void loadDataForDate(final String selectedDate) {
         executorService.execute(() -> {
+            Step stepRecord = stepDao.getStepByDate(userKey, selectedDate);
+            final int steps;
+            float distance;
 
-            Step rec = stepDao.getStepByDate(userKey, ymd);
-            final int   steps      = rec != null ? rec.getStepCount() : 0;
-            final float distanceKm = rec != null ? rec.getDistance()  : 0f;
-
-            /* —— 2. 若本地无记录可在此处尝试网络同步（可选） —— */
-            // TODO: 若需要网络拉取，调用 StepSyncManager.getLatest(...)
-
-            /* —— 3. 更新 / 插入数据库（确保持久化） —— */
-            if (rec == null) {
-                rec = new Step(userKey, ymd, steps, distanceKm);
-                stepDao.insertStep(rec);
+            // 如果数据为空，插入新记录
+            if (stepRecord == null) {
+                stepRecord = new Step(userKey, selectedDate, 0, 0f);
+                stepDao.insertStep(stepRecord);
+                steps = 0;
+                distance = 0f;
             } else {
-                rec.setStepCount(steps);
-                rec.setDistance(distanceKm);
-                stepDao.updateStep(rec);
+                steps = stepRecord.getStepCount();
+                distance = stepRecord.getDistance();
             }
 
-            /* —— 4. 回到主线程刷新 UI —— */
-            requireActivity().runOnUiThread(() -> {
-                updateUIWithStepsAndDistance(steps, distanceKm, ymd);
+            // 检查并修正 distance
+            float expectedDistance = steps * 0.0007f;  // 每步0.0007公里
 
+            // 检查并修正 distance，阈值设为 0.0005公里（50米），可以根据实际情况调整
+            if (Math.abs(distance - expectedDistance) > 0.0005) {
+                // 如果差距超过阈值，更新为计算出来的正确距离
+                distance = expectedDistance;
+                stepRecord.setDistance(distance);
+                stepDao.updateStep(stepRecord);  // 保存修正后的数据
+            }
+
+
+
+            // 更新 UI
+            float finalDistance = distance;
+            requireActivity().runOnUiThread(() -> {
+                updateUIWithStepsAndDistance(steps, finalDistance, selectedDate);
             });
         });
     }
 
-
-
-
-
-
-
-
-
-
-
-
-    // 先从本地数据库加载指定日期数据，如果没有则从 Google Fit 获取数据
-
-
-
-
-    // 先从数据库加载指定日期的数据
-    private void loadDataFromDatabase(String selectedDate) {
-        Log.e(TAG,"intodatabase");
-        executorService.execute(() -> {
-                    Step todayStep = stepDao.getStepByDate(userKey, selectedDate);
-                    final int steps;
-                    final float distance;
-                    if (todayStep == null) {
-                        todayStep = new Step(userKey, selectedDate, 0, 0f);
-                        stepDao.insertStep(todayStep);
-                        steps = 0;
-                        distance = 0f;
-                    } else {
-                        steps = todayStep.getStepCount();
-                        distance = todayStep.getDistance();
-                    }
-                    Log.e(TAG,"steps="+steps);
-            updateUIWithStepsAndDistance(steps, distance,selectedDate);
-        });
-    }
 
 
 

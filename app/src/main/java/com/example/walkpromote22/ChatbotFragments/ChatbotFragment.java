@@ -1,15 +1,16 @@
 package com.example.walkpromote22.ChatbotFragments;
 
 
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.fetchTrafficEventsOnce;
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.generateRoute;
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.getInterestingPoint;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchTrafficEventsOnce;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.generateRoute;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.getInterestingPoint;
+import static com.example.walkpromote22.ChatbotFragments.SummaryAgent.postStatusToMastodonAsync;
 import static com.example.walkpromote22.Manager.RouteSyncManager.createRoute;
 import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitialized;
 
 import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
 import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
-import static com.example.walkpromote22.WalkFragments.AccompanyBot.buildUserInputs;
+import static com.example.walkpromote22.WalkFragments.AccompanyAgent.buildUserInputs;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 import static com.example.walkpromote22.tool.MapTool.rank;
 import static com.example.walkpromote22.tool.MapTool.trimLocationName;
@@ -114,13 +115,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -181,7 +179,7 @@ public class ChatbotFragment extends Fragment {
     private EditText activeInput;
     private View activeSend;
     // 全局对话历史
-    private JSONArray conversationHistory = new JSONArray();
+    public static JSONArray conversationHistory = new JSONArray();
     public static JSONArray localConversationHistory=new JSONArray();
 
     @Nullable
@@ -819,7 +817,11 @@ public class ChatbotFragment extends Fragment {
                 return;
             }
             if(needMedia){
-                handleMediaRequest();
+                try {
+                    handleMediaRequest();
+                } catch (JSONException e) {
+                    throw new RuntimeException(e);
+                }
             }
             // 无工具触发：只展示自然语言（上面已展示）
         });
@@ -983,7 +985,7 @@ public class ChatbotFragment extends Fragment {
                     org.json.JSONArray poiArray;
                     try {
                         Log.e("tag","2");
-                        poiArray = GeographyBot.getCoreLocationsFromRequirement(requireContext(),dialogForRoute);
+                        poiArray = GeographyAgent.getCoreLocationsFromRequirement(requireContext(),dialogForRoute);
                     } catch (Exception ex) {
                        // Log.e(TAG, "Map_API_Certain 调用失败：", ex);
                         poiArray = new org.json.JSONArray();
@@ -1301,7 +1303,7 @@ public class ChatbotFragment extends Fragment {
                 org.json.JSONArray poiArray;
                 try {
                     // ✅ 只用“上一句用户输入”
-                    poiArray = GeographyBot.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
+                    poiArray = GeographyAgent.getCoreLocationsFromRequirement(requireContext(),lastUserMsg);
                 } catch (Exception ex) {
                   //  Log.e(TAG, "Map_API_Certain 调用失败：", ex);
                     poiArray = new org.json.JSONArray();
@@ -1326,6 +1328,24 @@ public class ChatbotFragment extends Fragment {
     private void handleNavigationRequest(List<Location> route) {
         if(route!=null) Log.e(TAG,"喂给导航的路线点数量："+route.size());
         else  {Log.e(TAG,"喂给导航的路线点数量:0");}
+        WalkFragment wf = new WalkFragment();
+        Bundle b = new Bundle();
+        uploadUserHistory(
+                lastRouteForUpload,
+                conversationHistory,
+                new RouteSyncManager.OnRouteCreated() {
+                    @Override
+                    public void onSuccess(long routeId) {
+                        Log.i("RouteSync", "✅ 上传成功 routeId=" + routeId);
+                        b.putSerializable("routeId",routeId);
+                    }
+
+                    @Override
+                    public void onFail(Exception e) {
+                        Log.e("RouteSync", "❌ 上传失败", e);
+                    }
+                }
+        );
         // 1) 切换到导航 UI（你已有的代码）
         startNav=true;
         chatModeContainer.setVisibility(View.GONE);
@@ -1337,8 +1357,7 @@ public class ChatbotFragment extends Fragment {
         bindComposer(activeInput, activeSend);
 
         // 2) 动态加载 WalkFragment
-        WalkFragment wf = new WalkFragment();
-        Bundle b = new Bundle();
+
         b.putString("user_key", userKey);
         if (route != null && !route.isEmpty()) {
             b.putSerializable("route_points", new java.util.ArrayList<>(route));
@@ -1683,21 +1702,7 @@ public class ChatbotFragment extends Fragment {
         }
 
         addChatMessage(root, false);
-        uploadUserHistory(
-                lastRouteForUpload,
-                conversationHistory,
-                new RouteSyncManager.OnRouteCreated() {
-                    @Override
-                    public void onSuccess(long routeId) {
-                        Log.i("RouteSync", "✅ 上传成功 routeId=" + routeId);
-                    }
 
-                    @Override
-                    public void onFail(Exception e) {
-                        Log.e("RouteSync", "❌ 上传失败", e);
-                    }
-                }
-        );
     }
 
 
@@ -2113,8 +2118,8 @@ public class ChatbotFragment extends Fragment {
 
 
 
-    @Override public void onResume() { super.onResume(); GeographyBot.setTranscriptProvider(() -> buildFullTranscript(null)); }
-    @Override public void onPause()  { super.onPause();  GeographyBot.setTranscriptProvider(null); }
+    @Override public void onResume() { super.onResume(); GeographyAgent.setTranscriptProvider(() -> buildFullTranscript(null)); }
+    @Override public void onPause()  { super.onPause();  GeographyAgent.setTranscriptProvider(null); }
 
 
 
@@ -2278,92 +2283,23 @@ public class ChatbotFragment extends Fragment {
     }
 
 
-    private void handleMediaRequest(){
+    private void handleMediaRequest() throws JSONException {
 
-        postStatusToMastodonAsync(
-                "ATwVkRP6ZXAq31iOOJ9cYcAwKtmgL7aekrToeYzLqN4",                  // 建议重置后使用新的，不要硬编码进仓库
-                "今天的心得：最小参数 + 异步发帖（public）✅",
-                new MastoPostListener() {
-                    @Override public void onSuccess(@NonNull JSONObject resp) {
-                        // 可直接拿 URL：resp.optString("url")
+    // ✅ 用新增重载：history + GptClient 适配器
+        SummaryAgent.postStatusToMastodonAsync(
+                "ATwVkRP6ZXAq31iOOJ9cYcAwKtmgL7aekrToeYzLqN4",
+                conversationHistory,
+
+                new SummaryAgent.MastoPostListener() {
+                    @Override public void onSuccess(@NonNull org.json.JSONObject resp) {
                         android.util.Log.i("Masto", "成功: " + resp.optString("url"));
                     }
-                    @Override public void onFailure(@NonNull String err, @Nullable JSONObject resp) {
+                    @Override public void onFailure(@NonNull String err, @Nullable org.json.JSONObject resp) {
                         android.util.Log.e("Masto", "失败: " + err + " " + (resp == null ? "" : resp.toString()));
                     }
                 }
         );
 
-    }
-
-    /** 发帖结果回调（已切回主线程） */
-    public interface MastoPostListener {
-        void onSuccess(@NonNull JSONObject resp);                 // 含 id、url、created_at、content 等
-        void onFailure(@NonNull String error, @Nullable JSONObject resp);
-    }
-
-    /**
-     * 最小参数异步发帖：
-     * - 实例固定为 https://mastodon.social
-     * - visibility 固定为 public
-     * - 绝不阻塞主线程（新线程发请求，回调切回主线程）
-     */
-    public static void postStatusToMastodonAsync(
-            @NonNull String accessToken,
-            @NonNull String statusText,
-            @NonNull MastoPostListener listener
-    ) {
-        final Handler main = new Handler(Looper.getMainLooper());
-        new Thread(() -> {
-            HttpURLConnection conn = null;
-            JSONObject json = null;
-            try {
-                final String url = "https://mastodon.social/api/v1/statuses";
-                final String body = "status=" + URLEncoder.encode(statusText, "UTF-8")
-                        + "&visibility=public";
-
-                URL u = new URL(url);
-                conn = (HttpURLConnection) u.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                conn.setRequestProperty("Authorization", "Bearer " + accessToken);
-
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.getBytes(StandardCharsets.UTF_8));
-                }
-
-                final int code = conn.getResponseCode();
-                InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
-                StringBuilder sb = new StringBuilder();
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line).append('\n');
-                }
-                String resp = sb.toString();
-                json = new JSONObject(resp);
-
-                if (code < 200 || code >= 300) {
-                    final JSONObject j = json;
-                    main.post(() -> listener.onFailure("HTTP_" + code, j));
-                    return;
-                }
-                if (json.opt("id") == null) {
-                    final JSONObject j = json;
-                    main.post(() -> listener.onFailure("MASTO_BAD_RESP", j));
-                    return;
-                }
-                final JSONObject j = json;
-                main.post(() -> listener.onSuccess(j));
-            } catch (Throwable t) {
-                final JSONObject j = json;
-                main.post(() -> listener.onFailure("EXCEPTION:" + t.getClass().getSimpleName(), j));
-            } finally {
-                if (conn != null) conn.disconnect();
-            }
-        }).start();
     }
 
 

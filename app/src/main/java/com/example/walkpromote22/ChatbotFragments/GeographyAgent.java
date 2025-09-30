@@ -65,7 +65,7 @@ import java.util.zip.GZIPInputStream;
 /**
  * 步行路线生成工具（支持 GPT 多途径点）
  */
-public class GeographyBot {
+public class GeographyAgent {
     public static LatLng location;
     public static String response;
 
@@ -74,7 +74,7 @@ public class GeographyBot {
 
     public static double distanceOfRoute;
     /** 高德 Web 服务 Key */
-    private static final String AMAP_KEY = "03f8248595264720386231fad6739bb8";
+    private static final String AMAP_KEY = "c544938179068737b29bcd4456a87428";
 
     /** OpenAI Key（上线前移出源码） */
 
@@ -496,7 +496,7 @@ public class GeographyBot {
         final long tApi0 = System.currentTimeMillis();
         List<Location> out = new ArrayList<>();
         Set<String> dedup = new HashSet<>();
-        final int RADIUS_M = 5000;
+        final int RADIUS_M = 10000;
         final int PAGE_SZ = 25;
         final int MAX_PAGES = 5;
 
@@ -1039,7 +1039,7 @@ public class GeographyBot {
 
     private static void throttleGate() {
         if (!ENABLE_THROTTLE) return;
-        synchronized (GeographyBot.class) {
+        synchronized (GeographyAgent.class) {
             long diff = System.currentTimeMillis() - lastRequestTime;
             if (diff < MIN_INTERVAL_MS) {
                 try { Thread.sleep(MIN_INTERVAL_MS - diff); } catch (InterruptedException ignore) {}

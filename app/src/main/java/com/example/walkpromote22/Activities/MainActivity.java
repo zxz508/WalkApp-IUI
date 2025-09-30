@@ -25,6 +25,7 @@ import com.amap.api.maps.MapsInitializer;
 import com.example.walkpromote22.ChatbotFragments.ChatbotFragment;
 import com.example.walkpromote22.Manager.RouteSyncManager;
 import com.example.walkpromote22.Manager.StepSyncManager;
+import com.example.walkpromote22.Manager.PathSyncManager;
 import com.example.walkpromote22.ProfileFragments.PersonalInfoFragment;
 import com.example.walkpromote22.ProfileFragments.ProfileFragment;
 import com.example.walkpromote22.R;
@@ -114,6 +115,13 @@ public class MainActivity extends AppCompatActivity {
         // 路线云-本地同步
         RouteSyncManager.init(getApplicationContext());
         RouteSyncManager.syncFromCloudToLocal(userKey);
+        // 路线云-本地同步
+        RouteSyncManager.init(getApplicationContext());
+        RouteSyncManager.syncFromCloudToLocal(userKey);
+
+
+        new PathSyncManager(this).pullAllForCurrentUser();
+
 
         // 若本地用户信息缺失，则从云端补齐
         ExecutorService executor = Executors.newSingleThreadExecutor();

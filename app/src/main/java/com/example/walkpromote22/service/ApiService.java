@@ -1,11 +1,14 @@
 package com.example.walkpromote22.service;
 
 import com.example.walkpromote22.data.dto.LocationDTO;
+import com.example.walkpromote22.data.dto.PathDTO;
+import com.example.walkpromote22.data.dto.PathPointDTO;
 import com.example.walkpromote22.data.dto.RouteDTO;
 import com.example.walkpromote22.data.dto.StepDTO;
 import com.example.walkpromote22.data.dto.UserDTO;
 
 import java.util.List;
+import java.util.concurrent.Executor;
 
 import retrofit2.Call;
 import retrofit2.http.Body;
@@ -46,5 +49,17 @@ public interface ApiService {
     @GET("locations/by-route")
     Call<List<LocationDTO>> getLocationsByRouteId(@Query("routeId") long routeId);
 
+    @POST("paths/upload")
+    Call<Void> uploadPaths(@Body List<PathDTO> one);
+
+    @POST("paths/pathPoints/upload")
+    Call<Void> uploadPathPoints(@Body List<PathPointDTO> list);
+
+    @GET("paths/by-user")
+    Call<List<PathDTO>> getPathsByUserKey(@Query("userKey") String userKey);
+
+    @GET("paths/pathPoints/by-Id")
+    Call<List<PathPointDTO>> getPathPointsByPathId(@Query("pathId") long pathId);
+// 如果你的 pathId 实际是 String（UUID），请改成 @Query("pathId") String pathId
 
 }

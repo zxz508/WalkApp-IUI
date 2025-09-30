@@ -7,22 +7,23 @@
     android:layout_height="match_parent"
     android:padding="16dp">
 
-    <!-- 共同容器，内部包含数据展示和地图容器 -->
+    <!-- 共同容器：改为贴父布局底部，避免依赖按钮可见性导致高度为 0 -->
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/container"
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@+id/btn_toggle_run"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- 路径/数据滚动区：默认可见，铺满内层容器 -->
+        <!-- 路径/数据滚动区：默认可见；加底部内边距，避免按钮可见时遮挡内容 -->
         <ScrollView
             android:id="@+id/scrollView_paths"
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:fillViewport="true"
+            android:paddingBottom="96dp"
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent"
@@ -36,7 +37,7 @@
                 android:padding="8dp"/>
         </ScrollView>
 
-        <!-- 地图容器：同样铺满内层容器；默认 GONE，代码里需要显示地图时再设为 VISIBLE -->
+        <!-- 地图容器：代码中需要显示地图时设为 VISIBLE -->
         <FrameLayout
             android:id="@+id/map_container"
             android:layout_width="0dp"
@@ -48,17 +49,19 @@
             app:layout_constraintEnd_toEndOf="parent"/>
     </androidx.constraintlayout.widget.ConstraintLayout>
 
+    <!-- 选择按钮：放在上方 -->
     <Button
         android:id="@+id/btn_toggle_select"
         android:layout_width="0dp"
         android:layout_height="45dp"
-        android:layout_marginBottom="24dp"
+        android:layout_marginBottom="12dp"
         android:text=""
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintBottom_toTopOf="@id/btn_toggle_run"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- 开始/结束跑步按钮 -->
+    <!-- 开始/结束跑步按钮：放在底部。
+         若运行时需要“彻底隐藏”，请使用 INVISIBLE 保留占位，避免内容被覆盖。 -->
     <Button
         android:id="@+id/btn_toggle_run"
         android:layout_width="0dp"
@@ -66,7 +69,7 @@
         android:layout_marginBottom="24dp"
         android:text="Get moving"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

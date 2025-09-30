@@ -13,7 +13,7 @@ import java.util.List;
 @Dao
 public interface PathDao {
     @Insert
-    long insertPath(Path path);  // 插入路径记录，并返回生成的 pathId
+    void insertPath(Path path);  // 插入路径记录，并返回生成的 pathId
 
     @Update
     void updatePath(Path path);
@@ -31,5 +31,7 @@ public interface PathDao {
     @Delete
     void deletePath(Path path);  // 删除路径
 
+    @Insert
+    void insert(Path path);
 }
 

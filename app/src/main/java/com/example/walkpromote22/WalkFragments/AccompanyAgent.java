@@ -1,7 +1,7 @@
 package com.example.walkpromote22.WalkFragments;
 
 import static com.example.walkpromote22.ChatbotFragments.ChatbotFragment.localConversationHistory;
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.fetchPOIs;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchPOIs;
 import static com.example.walkpromote22.WalkFragments.WalkFragment.injectTiredHintIfNeeded;
 
 import android.content.Context;
@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
  * 不管理地图/定时；WalkFragment 每次拿到 currentLoc 后调用 processTick(...)
  * 内部直接用 OPENAI_KEY 创建 ChatbotHelper 进行一次对话，解析令牌并通过回调返回动作。
  */
-public class AccompanyBot {
+public class AccompanyAgent {
 
     private static final String TAG = "SmartGuideMini";
     private static final double DEFAULT_RADIUS_M = 500.0;
@@ -90,7 +90,7 @@ public class AccompanyBot {
 
     /** WalkFragment 每 40s 调一次，把“最新位置”喂过来 */
 
-    public AccompanyBot(JSONArray userInputs, List<Location> routeList) {
+    public AccompanyAgent(JSONArray userInputs, List<Location> routeList) {
         this.userInputs = (userInputs == null ? new JSONArray() : userInputs);
         this.routeList    = (routeList    == null ? new ArrayList<Location>()    : routeList);
     }

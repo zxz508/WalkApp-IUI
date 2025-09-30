@@ -6,8 +6,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.location.Criteria;
@@ -23,7 +25,12 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 
 import com.example.walkpromote22.Activities.MainActivity;
+import com.example.walkpromote22.Manager.StepSyncManager;
 import com.example.walkpromote22.R;
+import com.example.walkpromote22.data.dao.StepDao;
+import com.example.walkpromote22.data.database.AppDatabase;
+import com.example.walkpromote22.data.model.Step;
+import com.example.walkpromote22.tool.UserPreferences;
 
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -33,6 +40,8 @@ import android.hardware.SensorManager;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class StepService extends Service implements LocationListener, SensorEventListener {
 
@@ -71,8 +80,20 @@ public class StepService extends Service implements LocationListener, SensorEven
     private int todaySteps = 0;          // 当日步数
     private float counterBaseline = -1f; // STEP_COUNTER 基线
     private String todayDateStr = "";    // 当天日期（yyyyMMdd）
-
+    private StepSyncManager stepSyncManager;
     private boolean running = false;
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final BroadcastReceiver midnightReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || intent.getAction() == null) return;
+            String a = intent.getAction();
+            if (Intent.ACTION_DATE_CHANGED.equals(a)
+                    || Intent.ACTION_TIME_CHANGED.equals(a)
+                    || Intent.ACTION_TIMEZONE_CHANGED.equals(a)) {
+                handleMidnightRollOver(); // 见下
+            }
+        }
+    };
 
     // =============== 生命周期 ===============
     @Override
@@ -80,8 +101,12 @@ public class StepService extends Service implements LocationListener, SensorEven
         super.onCreate();
         Log.i(TAG, "onCreate");
         createNotificationChannel();
-
-
+        stepSyncManager = new StepSyncManager(getApplicationContext());
+        IntentFilter f = new IntentFilter();
+        f.addAction(Intent.ACTION_DATE_CHANGED);
+        f.addAction(Intent.ACTION_TIME_CHANGED);
+        f.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+        registerReceiver(midnightReceiver, f); // 动态注册
         startAsForegroundWithTypes();
         initLocationManager();
         restoreStepState();         // 恢复当日步数/基线
@@ -132,6 +157,32 @@ public class StepService extends Service implements LocationListener, SensorEven
     }
 
 
+
+    private void handleMidnightRollOver() {
+        // 1) 内存状态归零，并让下次计步强制重建基线
+        todaySteps = 0;
+        counterBaseline = -1f;     // 迫使下次 SENSOR 事件重新基线
+        persistStepState();
+        broadcastSteps(todaySteps, "midnight");
+
+        // 2) 数据库写“今天=0”，并立刻上传（即便半夜没走动，也有 0 记录）
+        io.execute(() -> {
+            String userKey = new UserPreferences(getApplicationContext()).getUserKey();
+            String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                    .format(new java.util.Date());
+            StepDao stepDao = AppDatabase.getDatabase(getApplicationContext()).stepDao();
+            Step rec = stepDao.getStepByDate(userKey, today);
+            if (rec == null) {
+                rec = new Step(userKey, today, 0, 0f);
+                stepDao.insertStep(rec);
+            } else {
+                rec.setStepCount(0);
+                rec.setDistance(0f); // 如你不想清零里程，可删掉这一行
+                stepDao.updateStep(rec);
+            }
+            if (stepSyncManager != null) stepSyncManager.uploadToday();
+        });
+    }
 
     private void startAsForegroundWithTypes() {
         Notification n = buildNotification("SmartWalkCoach 正在运行", "定位与行走监测已开启");
@@ -365,29 +416,65 @@ public class StepService extends Service implements LocationListener, SensorEven
             if (computed != todaySteps) {
                 todaySteps = computed;
                 persistStepState();
-                broadcastSteps(todaySteps, "counter");
 
-                // TODO：如需写数据库/同步服务，这里调用（避免“虚构”，留钩子）
-                // StepSyncManager.saveLocalToday(todaySteps);
-                // stepDao.upsert(...);
-            }
-        } else if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
-            // 某些设备无 COUNTER，可用 DETECTOR 叠加
-            // 注意：若同时有 COUNTER，这里可以选择不叠加，避免重复
-            if (stepCounter == null) {
-                int newVal = todaySteps + 1;
-                if (newVal != todaySteps) {
-                    todaySteps = newVal;
-                    persistStepState();
-                    broadcastSteps(todaySteps, "detector");
 
-                    // TODO：如需写数据库/同步服务，这里调用
+                // === 保持你原有的 Room 写库逻辑（若你原来没写库，可参考下面几行）===
+                Executors.newSingleThreadExecutor().execute(() -> {
+                    String userKey = new UserPreferences(getApplicationContext()).getUserKey();
+                    String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                            .format(new java.util.Date());
+                    StepDao stepDao = AppDatabase.getDatabase(getApplicationContext()).stepDao();
+                    Step rec = stepDao.getStepByDate(userKey, today);
+                    if (rec == null) {
+                        rec = new Step(userKey, today, todaySteps, 0f);
+                        stepDao.insertStep(rec);
+                    } else {
+                        rec.setStepCount(todaySteps);
+                        stepDao.updateStep(rec);
+                    }
+
+                    // ★ 关键：本地写库OK后，立刻同步到云端
+                    if (stepSyncManager != null) {
+                        stepSyncManager.uploadToday();
+                    }
+                });
+            } else if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
+                // 某些设备无 COUNTER，可用 DETECTOR 叠加
+                // 注意：若同时有 COUNTER，这里可以选择不叠加，避免重复
+                if (stepCounter == null) {
+                    int newVal = todaySteps + 1;
+                    if (newVal != todaySteps) {
+                        todaySteps = newVal;
+                        persistStepState();
+
+
+                        Executors.newSingleThreadExecutor().execute(() -> {
+                            String userKey = new UserPreferences(getApplicationContext()).getUserKey();
+                            String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                                    .format(new java.util.Date());
+                            StepDao stepDao = AppDatabase.getDatabase(getApplicationContext()).stepDao();
+                            Step rec = stepDao.getStepByDate(userKey, today);
+                            if (rec == null) {
+                                rec = new Step(userKey, today, todaySteps, 0f);
+                                stepDao.insertStep(rec);
+                            } else {
+                                rec.setStepCount(todaySteps);
+                                stepDao.updateStep(rec);
+                            }
+                            if (stepSyncManager != null) stepSyncManager.uploadToday();
+                        });
+
+                    }
                 }
             }
         }
     }
 
-    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+
+    }
+
 
     // =============== 广播给 UI ===============
     private void broadcastSteps(int steps, String source) {

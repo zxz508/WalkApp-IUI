@@ -1,20 +1,14 @@
-package com.example.walkpromote22.data.model;
+package com.example.walkpromote22.data.dto;
 
-import androidx.room.Entity;
-import androidx.room.PrimaryKey;
 import androidx.annotation.NonNull;
 
+public class PathDTO {
 
 
-
-@Entity(tableName = "paths")
-public class Path {
-
-    @PrimaryKey
     private long pathId;
 
     private String routeImagePath;
-    @NonNull
+
     private String userKey; // 关联用户
 
     private long startTimestamp; // 路线开始时间
@@ -26,7 +20,7 @@ public class Path {
 
 
 
-    public Path(@NonNull String userKey,long pathId,String routeImagePath, long startTimestamp, long endTimestamp,double distance, String summary) {
+    public PathDTO(@NonNull String userKey, long pathId, String routeImagePath, long startTimestamp, long endTimestamp, double distance, String summary) {
         this.userKey = userKey;
         this.pathId=pathId;
         this.routeImagePath=routeImagePath;
@@ -35,7 +29,6 @@ public class Path {
         this.endTimestamp = endTimestamp;
         this.distance=distance;
     }
-
 
 
     // Getters 和 Setters
@@ -97,6 +90,4 @@ public class Path {
     public void setRouteImagePath(String routeImagePath) {
         this.routeImagePath = routeImagePath;
     }
-
-
 }

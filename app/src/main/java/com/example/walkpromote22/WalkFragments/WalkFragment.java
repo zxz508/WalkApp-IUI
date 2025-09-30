@@ -1,9 +1,11 @@
 package com.example.walkpromote22.WalkFragments;
 
-import static com.example.walkpromote22.ChatbotFragments.ChatbotFragment.localConversationHistory;
-import static com.example.walkpromote22.ChatbotFragments.GeographyBot.httpGet;
+import static com.example.walkpromote22.ChatbotFragments.ChatbotFragment.conversationHistory;
+import static com.example.walkpromote22.ChatbotFragments.SummaryAgent.generateSummaryTextOrFallback;
 
+import android.graphics.Typeface;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -12,27 +14,17 @@ import androidx.annotation.Nullable;
 
 import com.amap.api.location.AMapLocationClient;
 import com.amap.api.maps.AMap;
-import com.amap.api.maps.model.BitmapDescriptorFactory;
 import com.amap.api.maps.model.LatLng;
 import com.amap.api.maps.model.Marker;
-import com.amap.api.maps.model.MarkerOptions;
 // imports（根据你项目补齐）
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.Locale;
 import java.util.HashMap;
 import java.util.Map;
 
-import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
 
@@ -43,18 +35,23 @@ import android.graphics.BitmapFactory;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.ImageView;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.fragment.app.Fragment;
 
 import com.example.walkpromote22.Activities.MainActivity;
+import com.example.walkpromote22.ChatbotFragments.ChatbotResponseListener;
+import com.example.walkpromote22.Manager.PathSyncManager;
 import com.example.walkpromote22.data.dao.PathDao;
+import com.example.walkpromote22.data.dao.PathPointDao;
 import com.example.walkpromote22.data.dao.UserDao;
 import com.example.walkpromote22.data.database.AppDatabase;
 import com.example.walkpromote22.data.model.Location;
 import com.example.walkpromote22.data.model.Path;
 import com.example.walkpromote22.R;
+import com.example.walkpromote22.data.model.PathPoint;
 import com.example.walkpromote22.tool.MapTool;
 import com.example.walkpromote22.tool.UserPreferences;
 
@@ -69,9 +66,6 @@ import java.util.List;
 
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiFunction;
-import java.util.function.Consumer;
-import java.util.function.Function;
 
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -115,12 +109,12 @@ public class WalkFragment extends Fragment {
     private com.example.walkpromote22.ChatbotFragments.ChatbotHelper chatbotHelper;
 
     // 地图上的动态标记缓存
-    private String conversationHistoryArg; // 原始 JSON 字符串
+
     private List<Location> routeArg;  // Parcelable/Serializable均可，按你传入的来
 
 
     // 用户目标（你已经建好的 SmartGuide 类）
-    @Nullable private AccompanyBot accompanyBot = null;
+    @Nullable private AccompanyAgent accompanyAgent = null;
 // WalkFragment 字段区
 
 
@@ -140,9 +134,16 @@ public class WalkFragment extends Fragment {
     private Path currentPath; // 当前跑步记录
     private AppDatabase appDatabase;
     private Context context;
+    private ScrollView scrollViewPaths;
+
+    private long routeId;
+
+    private PathSyncManager pathSyncManager;
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+
 
     // 容器：显示数据的 ScrollView 内的 LinearLayout 和地图容器
-    private LinearLayout fitnessDataContainer;
+    private LinearLayout fitnessContainer;
     private FrameLayout mapContainer;
     private UserPreferences userPref;
     @SuppressLint("MissingInflatedId")
@@ -156,18 +157,20 @@ public class WalkFragment extends Fragment {
         if (args != null) {
             try {
                 routeArg = (List<Location>) args.getSerializable("route_points");
+                routeId=(long)args.getSerializable("routeId");
+
             }catch (Exception e){
                 Log.e(TAG,"route is null");
             }
-            Log.d(TAG, ", convHist.len=" + (conversationHistoryArg==null?0:conversationHistoryArg.length())
-                    + ", routeSize=" + (routeArg==null?0:routeArg.size()));
+
         } else {
             Log.w(TAG, "No arguments passed to WalkFragment");
         }
 
+        scrollViewPaths  = view.findViewById(R.id.scrollView_paths);
         AMapLocationClient.updatePrivacyShow(requireContext(), true, true);
         AMapLocationClient.updatePrivacyAgree(requireContext(), true);
-
+        pathSyncManager = new PathSyncManager(requireContext().getApplicationContext());
         if (routeArg != null && !routeArg.isEmpty()) {
             plannedRouteDistanceMeters = computeRouteDistanceMeters(routeArg);
             halfwayEncouraged = false;
@@ -176,7 +179,7 @@ public class WalkFragment extends Fragment {
         mapContainer = view.findViewById(R.id.map_container);
         Log.d(TAG, "onCreateView, mapContainer=" + mapContainer);
 
-        fitnessDataContainer=view.findViewById(R.id.fitness_data_container);
+        fitnessContainer =view.findViewById(R.id.fitness_data_container);
         Context appCtx = requireContext().getApplicationContext();
         context=appCtx;
         appDatabase = AppDatabase.getDatabase(appCtx);
@@ -184,6 +187,7 @@ public class WalkFragment extends Fragment {
         userDao=appDatabase.userDao();
         // 按钮：一开始就作为“结束”按钮
         toggleRunButton = view.findViewById(R.id.btn_toggle_run);
+        toggleRunButton.setVisibility(View.INVISIBLE);
         if(routeArg!=null) {
             startRunning(routeArg);
             if (toggleRunButton != null) {
@@ -199,9 +203,134 @@ public class WalkFragment extends Fragment {
         } else {
             Log.d(TAG, "mapContainer found: " + mapContainer);
         }
+        showHistoryList(true);
+        renderHistory();  // ⬅️ 一进来就把历史渲染出来
         return view;
     }
 
+    // ===== 核心：用 PathDao + PathPointDao 拉取并可视化（逐条 addPathCard）=====
+    private void renderHistory() {
+
+        if (fitnessContainer == null) return;
+
+        Log.e(TAG,"渲染历史");
+        ExecutorService exec = java.util.concurrent.Executors.newSingleThreadExecutor();
+        Handler main = new Handler(Looper.getMainLooper());
+        exec.execute(() -> {
+            List<Path> paths = new ArrayList<>();
+            try {
+                AppDatabase db = AppDatabase.getDatabase(requireContext());
+                PathDao pathDao = db.pathDao();
+                PathPointDao pointDao = db.pathPointDao();
+
+                UserPreferences pref = new UserPreferences(requireContext());
+                String userKey = pref.getUserKey();
+
+                // 取用户所有路径，按开始时间降序；可按需限制数量
+                final int LIMIT = 30;
+                List<Path> all = pathDao.getPathsByUserKey(userKey);
+                if (all != null && !all.isEmpty()) {
+                    int n = Math.min(LIMIT, all.size());
+                    for (int i = 0; i < n; i++) {
+                        Path p = all.get(i);
+
+                        // —— 仅当缺省时才补齐（尽量少触库/少计算）——
+                        boolean needUpdate = false;
+                        long   startTs = p.getStartTimestamp();
+                        long   endTs   = p.getEndTimestamp();
+                        double distanceMeters = p.getDistance();        // 这里假设存的是“米”；若你存的是“公里”，把计算和判断相应调整
+
+                        if (endTs <= 0 || distanceMeters <= 0 ) {
+                            List<PathPoint> pts = pointDao.getPathPointsByPathId(p.getPathId());
+                            if (pts != null && !pts.isEmpty()) {
+                                if (endTs <= 0) {
+                                    endTs = pts.get(pts.size() - 1).getTimestamp();
+                                    p.setEndTimestamp(endTs);
+                                    needUpdate = true;
+                                }
+
+
+                            }
+                        }
+                        if (needUpdate) {
+                            try { pathDao.updatePath(p); } catch (Throwable ignore) {}
+                        }
+                        paths.add(p);
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.e("WalkFragment", "加载路径失败", t);
+            }
+
+            // UI 渲染：清空后逐条 addPathCard(path)
+            main.post(() -> {
+                try { fitnessContainer.removeAllViews(); } catch (Throwable ignore) {}
+
+                if (paths == null || paths.isEmpty()) {
+                    // 空状态：加“空卡片”，隐藏“Get moving”按钮
+                    addEmptyCard("还没有步行记录",
+                            "开始一次短途步行，这里会自动展示你的路线与统计。");
+
+                    showHistoryList(true); // 保证显示列表区
+                    return;
+                }
+
+                // 有历史：逐条渲染，并显示按钮
+                for (Path p : paths) {
+                    try {
+                        addPathCard(p); // 你现成的方法：addPathCard(Path)
+                    } catch (Throwable e) {
+                        android.util.Log.e("WalkFragment", "addPathCard 失败 pathId=" + p.getPathId(), e);
+                    }
+                }
+
+            });
+        });
+    }
+
+    private void addEmptyCard(@NonNull String title, @NonNull String subtitle) {
+        Log.e(TAG,"空白卡");
+        // 用 CardView 简单做一张占位卡
+        androidx.cardview.widget.CardView card = new androidx.cardview.widget.CardView(requireContext());
+        ViewGroup.MarginLayoutParams lp = new ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        int m = dp(8);
+        lp.setMargins(m, m, m, m);
+        card.setLayoutParams(lp);
+        card.setUseCompatPadding(true);
+        card.setPreventCornerOverlap(true);
+
+        LinearLayout box = new LinearLayout(requireContext());
+        box.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(16);
+        box.setPadding(p, p, p, p);
+
+        TextView t1 = new TextView(requireContext());
+        t1.setText(title);
+        t1.setTextSize(16f);
+        t1.setTypeface(Typeface.DEFAULT_BOLD);
+
+        TextView t2 = new TextView(requireContext());
+        t2.setText(subtitle);
+        t2.setTextSize(14f);
+        t2.setTextColor(0xFF666666);
+
+        box.addView(t1);
+        box.addView(t2);
+        card.addView(box);
+
+        fitnessContainer.addView(card);
+    }
+
+    private int dp(int v) {
+        float d = getResources().getDisplayMetrics().density;
+        return (int) (v * d + 0.5f);
+    }
+
+    private void showHistoryList(boolean showHistory) {
+        if (scrollViewPaths != null) scrollViewPaths.setVisibility(showHistory ? View.VISIBLE : View.GONE);
+        if (mapContainer     != null) mapContainer.setVisibility(showHistory ? View.GONE    : View.VISIBLE);
+    }
     @Nullable
     private AMap map() {
         try {
@@ -212,6 +341,7 @@ public class WalkFragment extends Fragment {
         return null;
     }
 
+    
 
     private void attachMyLocationListener() {
         if (mapTool == null || mapTool.getMapView() == null) {
@@ -251,6 +381,7 @@ public class WalkFragment extends Fragment {
     @SuppressLint("SetTextI18n")
     private void startRunning(@Nullable List<Location> routeLocations) {
         isRunning = true;
+        showHistoryList(false);
         // 在 TodayFragment / 你的导航入口处：
         ((MainActivity) requireActivity()).ensureBackgroundLocationIfNeeded();
 
@@ -259,7 +390,7 @@ public class WalkFragment extends Fragment {
         if (toggleRunButton != null) toggleRunButton.setText("Stop");
         Toast.makeText(getContext(), "Get moving", Toast.LENGTH_SHORT).show();
 
-        if (fitnessDataContainer != null) fitnessDataContainer.setVisibility(View.GONE);
+        if (fitnessContainer != null) fitnessContainer.setVisibility(View.GONE);
         if (mapContainer != null) mapContainer.setVisibility(View.VISIBLE);
 
         totalDistance = 0f;
@@ -288,9 +419,9 @@ public class WalkFragment extends Fragment {
         executorService.execute(() -> {
             long startTime = System.currentTimeMillis();
             try {
-                currentPath = new Path(userKey, startTime, 0, 0, 0, 0);
-                long generatedId = pathDao.insertPath(currentPath);
-                currentPath.setPathId(generatedId);
+                currentPath = new Path(userKey,routeId, "",startTime, 0, 0, "");
+                pathDao.insertPath(currentPath);
+
             } catch (Exception dbEx) {
                 Log.e(TAG, "Insert Path failed: " + dbEx.getMessage(), dbEx);
                 postShortToast("Save path failed");
@@ -364,83 +495,7 @@ public class WalkFragment extends Fragment {
     }
 
 
-    @SuppressLint("SetTextI18n")
-    private void startRunning() {
-        isRunning = true;
 
-        if (toggleRunButton != null) toggleRunButton.setText("Stop");
-        Toast.makeText(getContext(), "Get moving", Toast.LENGTH_SHORT).show();
-
-        if (fitnessDataContainer != null) fitnessDataContainer.setVisibility(View.GONE);
-        if (mapContainer != null) mapContainer.setVisibility(View.VISIBLE);
-
-        totalDistance = 0f;
-
-        // --- userKey / DB / DAO 兜底 ---
-        if (userKey == null || userKey.isEmpty()) {
-            try {
-                userKey = new UserPreferences(requireContext().getApplicationContext()).getUserKey();
-            } catch (Exception ignore) {}
-        }
-        if (appDatabase == null) {
-            appDatabase = AppDatabase.getDatabase(requireContext().getApplicationContext());
-        }
-        if (pathDao == null && appDatabase != null) {
-            pathDao = appDatabase.pathDao();
-        }
-        if (pathDao == null || userKey == null || userKey.isEmpty()) {
-            Log.e("RunningFragment", "startRunning: userKey is empty or pathDao null, abort to avoid NOT NULL violation.");
-            Toast.makeText(getContext(), "User not ready or DB not ready", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-
-        executorService.execute(() -> {
-            long startTime = System.currentTimeMillis();
-            try {
-                currentPath = new Path(userKey, startTime, 0, 0, 0, 0);
-                long generatedId = pathDao.insertPath(currentPath);
-                currentPath.setPathId(generatedId);
-            } catch (Exception dbEx) {
-                Log.e(TAG, "Insert Path failed: " + dbEx.getMessage(), dbEx);
-                postShortToast("Save path failed");
-                return;
-            }
-
-            requireActivity().runOnUiThread(() -> {
-                try {
-                    if (mapTool == null){
-                        Log.e(TAG, "mapContainer is null in startRunning()!");
-                        mapTool = new MapTool(getContext());}
-                    // 让 SurfaceView 铺满容器
-                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-                    mapTool.setLayoutParams(lp);
-
-                    mapContainer.removeAllViews();
-                    mapContainer.addView(mapTool);
-
-                    // ★ 等布局稳定后再启动地图与导航，避免 rejecting buffer
-                    mapContainer.post(() -> {
-                        try {
-                           // 如果 MapTool 内部有 SurfaceHolder 回调更好：在 surfaceCreated 里再 drawRoute
-
-                            mapTool.startLocation(18f);
-
-                            attachMyLocationListener();  // ← 加这一句
-
-                        } catch (Exception e) {
-                            Log.e(TAG, "Map init/start failed: " + e.getMessage(), e);
-                            postShortToast("Map init failed");
-                        }
-                    });
-                } catch (Exception uiEx) {
-                    Log.e(TAG, "Map container setup failed: " + uiEx.getMessage(), uiEx);
-                    postShortToast("Map view error");
-                }
-            });
-        });
-    }
 
 
     /** 小工具：安全在主线程弹 Toast */
@@ -468,19 +523,15 @@ public class WalkFragment extends Fragment {
         toggleRunButton.setText("Launch");
         Toast.makeText(getContext(), "End", Toast.LENGTH_SHORT).show();
 
-        // 先尝试停止所有可能的周期任务（若不存在这些 handler，不会报错）
-
-
-        // 先尽力停定位/监听，避免截图期间还在刷新地图
         try {
-            if (mapTool != null) {
-
-                try { if (mapTool.getAMap() != null) mapTool.getAMap().setMyLocationEnabled(false); } catch (Throwable ignore) {}
+            if (mapTool != null && mapTool.getAMap() != null) {
+                mapTool.getAMap().setMyLocationEnabled(false);
             }
         } catch (Throwable ignore) {}
 
-        // 保存总里程（保底）
-        try { totalDistance = (mapTool != null ? mapTool.getTotalDistance() : totalDistance); } catch (Throwable ignore) {}
+        try {
+            totalDistance = (mapTool != null ? mapTool.getTotalDistance() : totalDistance);
+        } catch (Throwable ignore) {}
 
         executorService.execute(() -> {
             try {
@@ -493,9 +544,9 @@ public class WalkFragment extends Fragment {
                 Log.w(TAG, "updatePath on stop failed: " + dbEx.getMessage(), dbEx);
             }
 
-            requireActivity().runOnUiThread(() -> {
+            // 封装截图逻辑（供 GPT 回调中调用）
+            Runnable screenshotAndUpload = () -> requireActivity().runOnUiThread(() -> {
                 if (mapTool != null && mapTool.getAMap() != null) {
-                    // 截图（成功或失败都进入 cleanup）
                     mapTool.getAMap().getMapScreenShot(new AMap.OnMapScreenShotListener() {
                         private void handle(Bitmap bitmap, int status) {
                             try {
@@ -508,27 +559,81 @@ public class WalkFragment extends Fragment {
                                                 pathDao.updatePath(currentPath);
                                             } catch (Throwable e) {
                                                 Log.w(TAG, "save screenshot path failed: " + e.getMessage(), e);
+                                            } finally {
+                                                uploadPathAndPoints(); // ⬅️ ★ 最终上传动作
                                             }
                                         });
+                                    } else {
+                                        executorService.execute(this::uploadPathAndPoints);
                                     }
                                 } else {
                                     Toast.makeText(getContext(), "截图失败", Toast.LENGTH_SHORT).show();
+                                    executorService.execute(this::uploadPathAndPoints);
                                 }
                             } catch (Throwable e) {
                                 Log.w(TAG, "handle screenshot error: " + e.getMessage(), e);
+                                executorService.execute(this::uploadPathAndPoints);
                             } finally {
                                 cleanupMapAfterScreenshot();
                             }
                         }
+
+                        private void uploadPathAndPoints() {
+                            if (currentPath == null) return;
+                            try {
+                                PathSyncManager psm = new PathSyncManager(requireContext().getApplicationContext());
+                                psm.uploadPath(currentPath);
+                                psm.uploadAllPointsOf(currentPath.getPathId());
+                            } catch (Throwable t) {
+                                Log.w(TAG, "upload path/points failed: " + t.getMessage(), t);
+                            }
+                        }
+
                         @Override public void onMapScreenShot(Bitmap bitmap) { handle(bitmap, 0); }
                         @Override public void onMapScreenShot(Bitmap bitmap, int status) { handle(bitmap, status); }
                     });
                 } else {
                     cleanupMapAfterScreenshot();
+                    executorService.execute(() -> {
+                        try {
+                            PathSyncManager psm = new PathSyncManager(requireContext().getApplicationContext());
+                            psm.uploadPath(currentPath);
+                            psm.uploadAllPointsOf(currentPath.getPathId());
+                        } catch (Throwable t) {
+                            Log.w(TAG, "upload path/points failed (no map): " + t.getMessage(), t);
+                        }
+                    });
+                }
+            });
+
+            // 💡关键：GPT 生成 summary 后再注入到 path，然后再调用上传截图逻辑
+            generateSummaryTextOrFallback(conversationHistory, new ChatbotResponseListener() {
+                @Override
+                public void onResponse(String reply) throws JSONException {
+                    if (currentPath != null) {
+                        currentPath.setSummary(reply);
+                        try {
+                            pathDao.updatePath(currentPath);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "Failed to save summary: " + t.getMessage(), t);
+                        }
+                    }
+                    screenshotAndUpload.run(); // ✅ 最终上传入口
+                }
+
+                @Override
+                public void onFailure(String error) throws JSONException {
+                    Log.e("TAG", error);
+                    if (currentPath != null) {
+                        currentPath.setSummary("Walk completed. Summary unavailable.");
+                    }
+                    screenshotAndUpload.run(); // 即使失败也要继续上传
                 }
             });
         });
     }
+
+
 
     /**
      * 在截图完成后清理地图视图并恢复其他 UI 状态
@@ -539,7 +644,7 @@ public class WalkFragment extends Fragment {
             mapContainer.removeAllViews();
             mapTool = null;
         }
-        fitnessDataContainer.setVisibility(View.VISIBLE);
+        fitnessContainer.setVisibility(View.VISIBLE);
         mapContainer.setVisibility(View.GONE);
         final double[] calory = {0};
         calculateCalories(new CaloriesCallback() {
@@ -551,9 +656,8 @@ public class WalkFragment extends Fragment {
         });
         //pathDao.updatePath();
         executorService.execute(() ->{
-            currentPath.setAverageSpeed(calculatePace());
             currentPath.setDistance(totalDistance/1000);
-            currentPath.setCalories(calory[0]);
+
             pathDao.updatePath(currentPath);
         });
         addPathCard(currentPath);
@@ -566,8 +670,9 @@ public class WalkFragment extends Fragment {
      */
     @SuppressLint("SetTextI18n")
     private void addPathCard(Path path) {
+        Log.e(TAG,"添加卡片");
         LayoutInflater inflater = LayoutInflater.from(getContext());
-        View cardView = inflater.inflate(R.layout.item_path_data, fitnessDataContainer, false);
+        View cardView = inflater.inflate(R.layout.item_path_data, fitnessContainer, false);
 
         TextView tvPathInfo = cardView.findViewById(R.id.tv_path_info);
         TextView tvPathTime = cardView.findViewById(R.id.tv_path_time);
@@ -583,7 +688,7 @@ public class WalkFragment extends Fragment {
                 pathDao.deletePath(path);  // 从数据库删除
                 requireActivity().runOnUiThread(() -> {
                     // 删除UI上的卡片
-                    fitnessDataContainer.removeView(cardView);
+                    fitnessContainer.removeView(cardView);
                     Toast.makeText(getContext(), "Path deleted", Toast.LENGTH_SHORT).show();
                 });
             });
@@ -599,8 +704,8 @@ public class WalkFragment extends Fragment {
         // 设置其他TextView的内容
         tvPathInfo.setText("Record: " + path.getPathId());
         tvPathTime.setText("Time: " + formattedTime);
-        tvPathPace.setText("Average speed: " + (path.getAverageSpeed() > 0 ? String.format(Locale.getDefault(), "%.2f km/min", path.getAverageSpeed()) : "--"));
-        tvPathCalories.setText("Calories: " + (path.getCalories() > 0 ? String.format(Locale.getDefault(), "%.2f calories", path.getCalories()) : "--"));
+        tvPathPace.setText("Average speed: " + (getAverageSpeed(path) > 0 ? String.format(Locale.getDefault(), "%.2f km/min", getAverageSpeed(path)) : "--"));
+        tvPathCalories.setText("Calories: " + (getCalories(path) > 0 ? String.format(Locale.getDefault(), "%.2f calories", getCalories(path)) : "--"));
         tvPathDistance.setText("Distance: " + (path.getDistance() > 0 ? String.format(Locale.getDefault(), "%.2f m", path.getDistance()) : "--"));
 
         // 如果该 Path 有保存的轨迹图，则在卡片下方显示图片
@@ -625,11 +730,19 @@ public class WalkFragment extends Fragment {
         cardView.setTag(path.getPathId());
 
 // 检查是否已经添加过该卡片
-        if (fitnessDataContainer.findViewWithTag(path.getPathId()) == null) {
-            fitnessDataContainer.addView(cardView, 0);  // 只有未添加的路径才会加入
+        if (fitnessContainer.findViewWithTag(path.getPathId()) == null) {
+            fitnessContainer.addView(cardView, 0);  // 只有未添加的路径才会加入
         }
 
 
+    }
+
+    private double getCalories(Path path) {
+        return 0;
+    }
+
+    private double getAverageSpeed(Path path) {
+        return 0;
     }
 
     public void attachSmartGuide(org.json.JSONArray userInputs) {
@@ -637,7 +750,7 @@ public class WalkFragment extends Fragment {
 
 
         // 只用两份数据构造 SmartGuide
-        accompanyBot = new AccompanyBot(userInputs, routeArg);
+        accompanyAgent = new AccompanyAgent(userInputs, routeArg);
 
         sgRunning=true;
         setupSmartGuideBridge();
@@ -646,7 +759,7 @@ public class WalkFragment extends Fragment {
         startSmartGuideTicker();
     }
 
-    private AccompanyBot.ActionSink sgSink;
+    private AccompanyAgent.ActionSink sgSink;
     private com.amap.api.maps.model.LatLng lastFix = null;
     private static final long SG_TICK_MS = 20000L;
 
@@ -656,7 +769,7 @@ public class WalkFragment extends Fragment {
                 Log.e("TAG","sgRunning="+sgRunning);
                 if (!sgRunning) return;
 
-                final AccompanyBot sg = accompanyBot;
+                final AccompanyAgent sg = accompanyAgent;
                 final LatLng loc = sgLastLatLng;
                 if (sg == null || sgSink == null || loc == null) {
                     // 没就绪就下次再试
@@ -702,7 +815,7 @@ public class WalkFragment extends Fragment {
     }
     private final java.util.List<com.amap.api.maps.model.Marker> sgMarkers = new java.util.ArrayList<>();
     private void setupSmartGuideBridge() {
-        sgSink = new AccompanyBot.ActionSink() {
+        sgSink = new AccompanyAgent.ActionSink() {
             @Override
             public void onAddMarker(@Nullable String poiName,double lat, double lng) {
                 runOnUiThreadX(() -> {
@@ -757,7 +870,7 @@ public class WalkFragment extends Fragment {
         };
 
         // 🔑 别忘了真正把 sink 注入给 SmartGuide
-        accompanyBot.setActionSink(sgSink);
+        accompanyAgent.setActionSink(sgSink);
     }
 
     private void sendMessageToChat(String text) {
@@ -823,7 +936,7 @@ public class WalkFragment extends Fragment {
 
             android.os.Bundle b = new android.os.Bundle();
             b.putString("payload", payload);
-            getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);
+            getParentFragmentManager().setFragmentResult("APP_TOOL_EVENT", b);//由chatbotFragment的fragmentresult监听直接注入conversationHist
 
             Toast.makeText(getContext(), "Walk completed!", Toast.LENGTH_SHORT).show();
         }

@@ -20,6 +20,7 @@ import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -78,25 +79,25 @@ public class StepSyncManager {
         userPref = new UserPreferences(ctx);                       // ★ 和 LoginActivity 一致
     }
 
+
     /* ---------------- ① 首次登录：拉全部历史 ---------------- */
     public void importHistorySteps() {
 
-              // 已经拉过
-        String userKey = userPref.getUserKey();                    // ★ 取 key
-        if (userKey == null) return;                               // 尚未登录
+
+        String userKey = userPref.getUserKey();
+        if (userKey == null) return;
 
         io.execute(() -> {
             try {
                 Response<List<StepDTO>> r = api.getAllSteps(userKey).execute();
                 if (!r.isSuccessful() || r.body() == null) return;
-                stepDao.deleteAllSteps();
 
+                stepDao.deleteAllSteps();
                 for (StepDTO dto : r.body()) {
                     stepDao.insertStep(new Step(dto.getUserKey(), dto.getDate(),
                             dto.getStepCount(), dto.getDistance()));
-
                 }
-                sp.edit().putBoolean(KEY_FIRST, true).apply();     // 标记完成
+                sp.edit().putBoolean(KEY_FIRST, true).apply();
                 Log.e("tag","成功拉取云端步数数据");
             } catch (IOException ignored) { }
         });
@@ -104,8 +105,7 @@ public class StepSyncManager {
 
     /* ---------------- ② 上传今日单条记录 ---------------- */
     public void uploadToday() {
-
-        String userKey = userPref.getUserKey();                    // ★ 取 key
+        String userKey = userPref.getUserKey();
         if (userKey == null) return;
 
         @SuppressLint("SimpleDateFormat")
@@ -114,7 +114,7 @@ public class StepSyncManager {
         io.execute(() -> {
             Step s = stepDao.getStepByDate(userKey, today);
             if (s == null) return;
-            if (s.getStepCount()<0) s.setStepCount(0);
+            if (s.getStepCount() < 0) s.setStepCount(0);
 
             List<StepDTO> one = Collections.singletonList(
                     new StepDTO(s.getUserKey(), s.getDate(),
@@ -123,5 +123,6 @@ public class StepSyncManager {
             try { api.uploadSteps(one).execute(); } catch (IOException ignored) { }
         });
     }
+
 }
 

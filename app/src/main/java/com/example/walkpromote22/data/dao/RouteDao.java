@@ -17,7 +17,7 @@ import java.util.List;
 public interface RouteDao {
 
     @Insert(onConflict = REPLACE)
-    void insert(Route route); // 插入路线记录，并返回生成的 id
+    void insert(Route route);
 
     @Update
     void updateRoute(Route route); // 更新路线记录

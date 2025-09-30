@@ -15,4 +15,7 @@ public interface PathPointDao {
 
     @Query("SELECT * FROM path_points WHERE pathId = :pathId ORDER BY timestamp ASC")
     List<PathPoint> getPathPointsByPathId(long pathId);
+
+    @Insert
+    void insertAll(List<PathPoint> entities);
 }
