@@ -44,6 +44,7 @@ import androidx.fragment.app.Fragment;
 import com.amap.api.location.AMapLocationClient;
 import com.amap.api.maps.model.LatLng;
 import com.example.walkpromote22.ChatbotFragments.ChatbotFragment;
+import com.example.walkpromote22.Manager.StepSyncManager;
 import com.example.walkpromote22.R;
 import com.example.walkpromote22.data.dao.StepDao;
 import com.example.walkpromote22.data.dao.UserDao;
@@ -93,7 +94,9 @@ public class TodayFragment extends Fragment {
     private StepDao stepDao;
     private UserDao userDao;
     private String userKey;
-
+    private boolean hasUIRequestedRefresh = false;
+    private boolean hasCloudDataArrived = false;
+    private final Object syncLock = new Object();
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
     private enum ProviderType { GOOGLE, SAMSUNG, HUAWEI, LOCAL, UNKNOWN }
@@ -209,7 +212,9 @@ public class TodayFragment extends Fragment {
             // —— 加载今天数据（UI 相关：切主线程）
             try {
                 if (isAdded()) {
-                    loadTodayData();
+                    String todayStr = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+                    loadDataForDate(todayStr);
+
                 }
             } catch (Throwable t) {
                 Log.e(TAG, "loadTodayData failed", t);
@@ -371,6 +376,31 @@ public class TodayFragment extends Fragment {
 
         return rootView;
     }
+
+
+
+
+    public void setCloudDataArrived() {
+        hasCloudDataArrived = true;
+
+        synchronized (syncLock) {
+            if (hasUIRequestedRefresh) {
+                String todayStr = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+                Step record = stepDao.getStepByDate(userKey, todayStr);
+                if (record != null) {
+                    updateUIWithStepsAndDistance(record.getStepCount(), record.getDistance(), todayStr);
+                }
+            }
+        }
+    }
+
+
+
+
+
+
+
+
     /** 统一启动“定位→POI→天气”，每一步都加超时与取消，避免链路悬挂导致 ANR */
     private void startLocationPoiWeatherWithTimeouts() throws Exception {
         if (!isAdded()) return;
@@ -722,88 +752,37 @@ public class TodayFragment extends Fragment {
 
 
 
+    private void loadDataForDate(String dateStr) {
 
-    @SuppressLint("SimpleDateFormat")
-    private void loadTodayData() {
+        if (userKey == null) return;
 
-        /* —— 1. 生成今天日期字符串 "yyyy-MM-dd" —— */
-        String todayStr = new SimpleDateFormat("yyyy-MM-dd")
-                .format(new Date());
-
-
-
-        /* —— 2. 后台线程读取数据库 —— */
         executorService.execute(() -> {
+            Step rec = stepDao.getStepByDate(userKey, dateStr);
+            final int steps = (rec != null) ? rec.getStepCount() : 0;
+            final float distanceKm = (rec != null) ? rec.getDistance() : 0f;
 
-            Step rec = stepDao.getStepByDate(userKey, todayStr);
-            final int    steps       = rec != null ? rec.getStepCount() : 0;
-            final float  distanceKm  = rec != null ? rec.getDistance() : 0f;
+            if (rec == null || steps == 0) {
+                Log.w("TodayFragment", "本地未找到有效数据，尝试从云端导入...");
+                new StepSyncManager(requireContext()).importHistorySteps(() -> {
+                    // 拉取完成后再查一次
+                    executorService.execute(() -> {
+                        Step newRec = stepDao.getStepByDate(userKey, dateStr);
+                        final int newSteps = (newRec != null) ? newRec.getStepCount() : 0;
+                        final float newDistance = (newRec != null) ? newRec.getDistance() : 0f;
 
-            /* —— 3. 切回主线程刷新 UI —— */
-            requireActivity().runOnUiThread(() -> {
-
-                /* 步数 */
-                stepTextView.setText(
-                        String.format(Locale.getDefault(), "%,d", steps));
-
-                /* 距离（km） */
-                distanceTextView.setText(
-                        String.format(Locale.getDefault(), "%.2f km", distanceKm));
-
-
-
-                setProgressFromDistanceAndSteps(distanceKm, steps);
-
-
-                /* 卡路里估算（示例公式） */
-                double calories = steps * 0.04 * (userWeight / 70f);
-                caloriesBurnedTextView.setText(
-                        String.format(Locale.getDefault(), "%.2f calories", calories));
-
-
-            });
-        });
-    }
-
-
-
-    private void loadDataForDate(final String selectedDate) {
-        executorService.execute(() -> {
-            Step stepRecord = stepDao.getStepByDate(userKey, selectedDate);
-            final int steps;
-            float distance;
-
-            // 如果数据为空，插入新记录
-            if (stepRecord == null) {
-                stepRecord = new Step(userKey, selectedDate, 0, 0f);
-                stepDao.insertStep(stepRecord);
-                steps = 0;
-                distance = 0f;
+                        requireActivity().runOnUiThread(() -> {
+                            updateUIWithStepsAndDistance(newSteps, newDistance,dateStr);
+                        });
+                    });
+                });
             } else {
-                steps = stepRecord.getStepCount();
-                distance = stepRecord.getDistance();
+                requireActivity().runOnUiThread(() -> {
+                    updateUIWithStepsAndDistance(steps, distanceKm,dateStr);
+                });
             }
-
-            // 检查并修正 distance
-            float expectedDistance = steps * 0.0007f;  // 每步0.0007公里
-
-            // 检查并修正 distance，阈值设为 0.0005公里（50米），可以根据实际情况调整
-            if (Math.abs(distance - expectedDistance) > 0.0005) {
-                // 如果差距超过阈值，更新为计算出来的正确距离
-                distance = expectedDistance;
-                stepRecord.setDistance(distance);
-                stepDao.updateStep(stepRecord);  // 保存修正后的数据
-            }
-
-
-
-            // 更新 UI
-            float finalDistance = distance;
-            requireActivity().runOnUiThread(() -> {
-                updateUIWithStepsAndDistance(steps, finalDistance, selectedDate);
-            });
         });
     }
+
 
 
 

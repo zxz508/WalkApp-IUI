@@ -2,6 +2,7 @@ package com.example.walkpromote22.WalkFragments;
 
 import static com.example.walkpromote22.ChatbotFragments.ChatbotFragment.localConversationHistory;
 import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchPOIs;
+import static com.example.walkpromote22.ChatbotFragments.GeographyAgent.fetchTrafficEventsOnce;
 import static com.example.walkpromote22.WalkFragments.WalkFragment.injectTiredHintIfNeeded;
 
 import android.content.Context;
@@ -23,6 +24,7 @@ import com.example.walkpromote22.tool.UserPreferences;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -136,25 +138,52 @@ public class AccompanyAgent {
                 String userKey = userPref.getUserKey();
                 List<Route> historyRoutes = db.routeDao().getRoutesByUserKey(userKey);
 
-                JSONArray historyArr = new JSONArray();
+                JSONArray userOnlyHistoryArr = new JSONArray();
                 int i = 0;
                 for (Route r : historyRoutes) {
                     if (i >= 10) break;
-                    JSONObject obj = new JSONObject();
-                    obj.put("id", r.getId());
-                    obj.put("name", r.getName());
-                    obj.put("createdAt", r.getCreatedAt());
-                    obj.put("description", r.getDescription());
-                    historyArr.put(obj);
+                    try {
+                        Object json = new JSONTokener(r.getDescription()).nextValue();
+
+                        if (json instanceof JSONArray) {
+                            JSONArray convArr = (JSONArray) json;
+                            for (int j = 0; j < convArr.length(); j++) {
+                                JSONObject msg = convArr.optJSONObject(j);
+                                if (msg != null && "user".equalsIgnoreCase(msg.optString("role"))) {
+                                    userOnlyHistoryArr.put(msg);
+                                }
+                            }
+                        } else if (json instanceof JSONObject) {
+                            JSONObject obj = (JSONObject) json;
+                            JSONArray convArr = obj.optJSONArray("conversationHistory");
+                            if (convArr != null) {
+                                for (int j = 0; j < convArr.length(); j++) {
+                                    JSONObject msg = convArr.optJSONObject(j);
+                                    if (msg != null && "user".equalsIgnoreCase(msg.optString("role"))) {
+                                        userOnlyHistoryArr.put(msg);
+                                    }
+                                }
+                            }
+                        } else {
+                            Log.e(TAG, "description 格式既不是 JSONObject 也不是 JSONArray");
+                        }
+
+                    } catch (Exception ex) {
+                        Log.e(TAG, "历史Route解析失败: " + ex.getMessage());
+                    }
                     i++;
                 }
-                payloadHistory.set("User_Conversation_History\n" + historyArr.toString());
+
+                payloadHistory.set("User_Conversation_History\n" + userOnlyHistoryArr.toString());
+
             } catch (Exception e) {
                 Log.e("ProcessTick", "smartGuide 获取历史失败", e);
                 payloadHistory.set("");
             }
             return null;
         };
+
+
 
         Future<Void> future = executorService.submit(loadHistoryTask);
 
@@ -187,14 +216,17 @@ public class AccompanyAgent {
                         "you can use {Add_Marker:POI_name,lat,lng} to mark the point with the name and lat,lng." +
                         "You should not respond any location that is further than 500m, don't add marker or text in user's current location," +
                         "you can just send {} if you think there is nothing user would be interested in in all POIs that sent to you."+
-                        "Sample"
+                        "Some common users may be interested in POI names, shopping malls, bars, cinemas, milk tea shops, etc"
                         ;
 
                 JSONArray hist = new JSONArray()
                         .put(new JSONObject().put("role", "system").put("content", sys))
-                        .put(new JSONObject().put("role", "user").put("content", payload.toString()))
-                        .put(new JSONObject().put("role", "system").put("content", EventInWalk));
-                        ;
+                        .put(new JSONObject().put("role", "user").put("content", payload.toString()));
+
+                EventInWalk= String.valueOf(fetchTrafficEventsOnce(currentLoc,500));
+                if (!TextUtils.isEmpty(EventInWalk)) {
+                    hist.put(new JSONObject().put("role", "system").put("content", EventInWalk));
+                }
 
 
                 AtomicReference<Consumer<String>> handleRef = new AtomicReference<>();

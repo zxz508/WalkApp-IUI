@@ -426,7 +426,7 @@ public class StepService extends Service implements LocationListener, SensorEven
                     StepDao stepDao = AppDatabase.getDatabase(getApplicationContext()).stepDao();
                     Step rec = stepDao.getStepByDate(userKey, today);
                     if (rec == null) {
-                        rec = new Step(userKey, today, todaySteps, 0f);
+                        rec = new Step(userKey, today, todaySteps,  todaySteps * 0.0007f);
                         stepDao.insertStep(rec);
                     } else {
                         rec.setStepCount(todaySteps);
@@ -455,7 +455,7 @@ public class StepService extends Service implements LocationListener, SensorEven
                             StepDao stepDao = AppDatabase.getDatabase(getApplicationContext()).stepDao();
                             Step rec = stepDao.getStepByDate(userKey, today);
                             if (rec == null) {
-                                rec = new Step(userKey, today, todaySteps, 0f);
+                                rec = new Step(userKey, today, todaySteps, todaySteps * 0.0007f);
                                 stepDao.insertStep(rec);
                             } else {
                                 rec.setStepCount(todaySteps);

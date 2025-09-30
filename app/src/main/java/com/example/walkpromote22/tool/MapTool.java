@@ -80,7 +80,7 @@ import okhttp3.Response;
  * 2. 根据目标点规划推荐路线（导航规划），调用路线规划 API 得到沿路拐点后绘制
  */
 public class MapTool extends LinearLayout {
-    private static final String API_KEY = "03f8248595264720386231fad6739bb8";
+    private static final String AMAP_KEY = "c544938179068737b29bcd4456a87428";
 
     private MapView mapView;
     // 在 MapContainerView 类中添加成员变量：
@@ -197,11 +197,6 @@ public class MapTool extends LinearLayout {
         return aMap;
     }
 
-    public void Navigation(List<Location> routeLocations) {
-    }
-
-    public void updateUserLocationOnMap(LatLng currentLocation) {
-    }
 
 
     public interface OnLocationChangedListener {
@@ -210,9 +205,7 @@ public class MapTool extends LinearLayout {
     private OnLocationChangedListener locationChangedListener;
 
     // 设置监听器的公开方法
-    public void setOnLocationChangedListener(OnLocationChangedListener listener) {
-        this.locationChangedListener = listener;
-    }
+
     public void startPureLocation(final float zoomLevel) throws Exception {
         if (locationClient == null) {
             locationClient = new AMapLocationClient(getContext().getApplicationContext());
@@ -604,9 +597,10 @@ public class MapTool extends LinearLayout {
             Toast.makeText(getContext(), "需要至少两个地点", Toast.LENGTH_SHORT).show();
             return;
         }
+        Log.e("MapTool", "drawRoute 被调用, size=" + locations.size());
 
-        // 关键：不要再 setOnMapLoadedListener；统一走就绪闸门
-        runWhenMapReady(() -> {
+        // 关键：不要再 setOnMapLoadedListener；统一走就绪
+            Log.e("TAG","开始请求路线规划");
             final int totalSegments = locations.size() - 1;
 
             // 占位每段结果
@@ -628,6 +622,7 @@ public class MapTool extends LinearLayout {
                 routeSearch.setRouteSearchListener(new RouteSearch.OnRouteSearchListener() {
                     @Override
                     public void onWalkRouteSearched(WalkRouteResult result, int errorCode) {
+                        Log.e("MapTool", "onWalkRouteSearched 被触发, errorCode=" + errorCode);
                         java.util.List<LatLng> seg = new java.util.ArrayList<>();
 
                         if (errorCode == AMapException.CODE_AMAP_SUCCESS
@@ -636,7 +631,9 @@ public class MapTool extends LinearLayout {
                                 && !result.getPaths().isEmpty()) {
                             WalkPath wp = result.getPaths().get(0);
                             seg = decodeWalkPath(wp); // 你已有的方法：把步行路径拆成 LatLng 列表
+                            Log.e("TAG","drawRoute成功");
                         } else {
+                            Log.e("TAG","drawRoute失败");
                             // 规划失败就直接端点直连，保证至少能看到线
                             seg.add(start);
                             seg.add(end);
@@ -681,10 +678,8 @@ public class MapTool extends LinearLayout {
                     @Override public void onDriveRouteSearched(com.amap.api.services.route.DriveRouteResult r, int ec) {}
                     @Override public void onRideRouteSearched(com.amap.api.services.route.RideRouteResult r, int ec) {}
                 });
-
                 routeSearch.calculateWalkRouteAsyn(query);
             }
-        });
     }
     public void drawBusRoute(final LatLng start, final LatLng busEnd, final List<LatLng> locations, int color, String apiKey, String city) {
         if (start == null || busEnd == null || locations == null || locations.size() < 1) {
@@ -901,7 +896,7 @@ public class MapTool extends LinearLayout {
         BufferedReader reader = null;
         try {
             String urlStr = "https://restapi.amap.com/v3/geocode/regeo?location=" + longitude + "," + latitude
-                    + "&key=" + API_KEY + "&radius=200&extensions=base";
+                    + "&key=" + AMAP_KEY + "&radius=200&extensions=base";
             URL url = new URL(urlStr);
             conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(5000);
@@ -1080,10 +1075,17 @@ public class MapTool extends LinearLayout {
         else mainHandler.post(r);
     }
 
+    // 替换 runWhenMapReady，让它始终打印日志并确保任务执行
     private void runWhenMapReady(Runnable r) {
-        if (mapReady) runOnUiThreadX(r);
-        else pendingMapTasks.add(r);
+        if (mapReady && aMap != null) {
+            Log.d("MapTool", "✅ 地图已就绪，立即执行任务");
+            runOnUiThreadX(r);
+        } else {
+            Log.w("MapTool", "🕓 地图未就绪，加入待执行列表");
+            pendingMapTasks.add(r);
+        }
     }
+
 
 }
 

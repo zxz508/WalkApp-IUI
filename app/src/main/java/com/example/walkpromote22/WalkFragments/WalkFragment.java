@@ -187,16 +187,16 @@ public class WalkFragment extends Fragment {
         userDao=appDatabase.userDao();
         // 按钮：一开始就作为“结束”按钮
         toggleRunButton = view.findViewById(R.id.btn_toggle_run);
-        toggleRunButton.setVisibility(View.INVISIBLE);
-        if(routeArg!=null) {
-            startRunning(routeArg);
-            if (toggleRunButton != null) {
-                toggleRunButton.setText("End Navigation"); // ✅ 初始就显示“结束”
-                toggleRunButton.setOnClickListener(v -> {
-                    stopRunning();  // ✅ 你已有的停止逻辑
-                    Toast.makeText(getContext(), "Navigation Ended", Toast.LENGTH_SHORT).show();
-                });
-            }
+        toggleRunButton.setVisibility(View.GONE);
+        if (routeArg != null && !routeArg.isEmpty()) {
+            plannedRouteDistanceMeters = computeRouteDistanceMeters(routeArg);
+            halfwayEncouraged = false;
+
+            // ✅ 延迟启动导航逻辑：等 mapContainer 完成布局后再执行
+            mapContainer.post(() -> {
+                Log.d(TAG, "✅ post-delayed startRunning: route size = " + routeArg.size());
+                startRunning(routeArg);
+            });
         }
         if (mapContainer == null) {
             Log.e(TAG, "mapContainer is NULL! Check fragment_walk.xml");
@@ -382,12 +382,16 @@ public class WalkFragment extends Fragment {
     private void startRunning(@Nullable List<Location> routeLocations) {
         isRunning = true;
         showHistoryList(false);
+
+        for (Location loc : routeLocations) {
+            Log.e(TAG, "route点: " + loc.getLatitude() + ", " + loc.getLongitude());
+        }
+
         // 在 TodayFragment / 你的导航入口处：
         ((MainActivity) requireActivity()).ensureBackgroundLocationIfNeeded();
 
+        Log.e(TAG, "传入startRunning的路线size=" + routeLocations.size());
 
-        Log.e(TAG,"传入startRunning的路线size="+routeLocations.size());
-        if (toggleRunButton != null) toggleRunButton.setText("Stop");
         Toast.makeText(getContext(), "Get moving", Toast.LENGTH_SHORT).show();
 
         if (fitnessContainer != null) fitnessContainer.setVisibility(View.GONE);
@@ -413,15 +417,15 @@ public class WalkFragment extends Fragment {
             return;
         }
 
-        final List<Location> safeRoute =routeLocations;
+        final List<Location> safeRoute = routeLocations;
 
-        Log.e(TAG,"safeRoute.szie="+safeRoute.size());
+        Log.e(TAG, "safeRoute.size=" + safeRoute.size());
+
         executorService.execute(() -> {
             long startTime = System.currentTimeMillis();
             try {
-                currentPath = new Path(userKey,routeId, "",startTime, 0, 0, "");
+                currentPath = new Path(userKey, routeId, "", startTime, 0, 0, "");
                 pathDao.insertPath(currentPath);
-
             } catch (Exception dbEx) {
                 Log.e(TAG, "Insert Path failed: " + dbEx.getMessage(), dbEx);
                 postShortToast("Save path failed");
@@ -430,11 +434,13 @@ public class WalkFragment extends Fragment {
 
             requireActivity().runOnUiThread(() -> {
                 try {
-                    if (mapTool == null){
-                        Log.e(TAG, "mapContainer is null in startRunning()!");
+                    // 初始化 mapTool
+                    if (mapTool == null) {
+                        Log.e(TAG, "mapTool is null, initializing mapTool...");
                         mapTool = new MapTool(getContext());
                     }
-                    // 让 SurfaceView 铺满容器
+
+                    // 让 mapTool 占满整个容器
                     FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
                     mapTool.setLayoutParams(lp);
@@ -442,45 +448,46 @@ public class WalkFragment extends Fragment {
                     mapContainer.removeAllViews();
                     mapContainer.addView(mapTool);
 
-                    // ★ 等布局稳定后再启动地图与导航，避免 rejecting buffer
+                    // 等待地图加载完成后再开始绘制路线
                     mapContainer.post(() -> {
                         try {
-                            // —— 修改开始：等待地图真正 loaded 再绘制路线（并加兜底定时）——
+                            // 确保 aMap 已加载
                             final com.amap.api.maps.AMap aMap = (mapTool != null) ? mapTool.getAMap() : null;
                             final java.util.concurrent.atomic.AtomicBoolean once = new java.util.concurrent.atomic.AtomicBoolean(false);
 
+                            // 绘制并启动导航的操作
                             final Runnable drawAndStart = () -> {
                                 if (!once.compareAndSet(false, true)) return; // 只执行一次
                                 try {
                                     if (safeRoute.isEmpty()) {
                                         mapTool.startLocation(17f);
-                                        Log.e(TAG,"输入凹startLocation的safeRoute.size="+safeRoute.size());
+                                        Log.e(TAG, "输入凹startLocation的safeRoute.size=" + safeRoute.size());
                                     } else {
-                                        Log.e(TAG,"输入凹startLocation的safeRoute.size="+safeRoute.size());
+                                        Log.e(TAG, "输入凹startLocation的safeRoute.size=" + safeRoute.size());
                                         Log.e("TAG", "locationClient.startLocation 已调用");
 
-                                        mapTool.startLocation(16f, safeRoute);
+                                        mapTool.startLocation(16f, safeRoute);  // 绘制路线
 
-                                        attachMyLocationListener();  // ← 你原来的调用保留
+                                        attachMyLocationListener();  // 保持原有的位置信息监听
                                     }
                                 } catch (Exception e) {
                                     Log.e(TAG, "draw/start failed: " + e.getMessage(), e);
                                 }
                             };
 
+                            // 当地图加载完成后，才开始绘制路线
                             if (aMap != null) {
                                 aMap.setOnMapLoadedListener(new com.amap.api.maps.AMap.OnMapLoadedListener() {
                                     @Override public void onMapLoaded() {
-                                        // 地图 GL/瓦片已就绪，安全绘制
+                                        // 地图 GL/瓦片已就绪，开始绘制
                                         aMap.setOnMapLoadedListener(null);
                                         drawAndStart.run();
                                     }
                                 });
                             }
-                            // 兜底：若地图其实早已 loaded（监听不会触发），这条会在 400ms 后确保执行一次
-                            mapContainer.postDelayed(drawAndStart, 400);
-                            // —— 修改结束 ——
 
+                            // 兜底：如果地图已加载，则延时 400ms 执行绘制操作
+                            mapContainer.postDelayed(drawAndStart, 400);
                         } catch (Exception e) {
                             Log.e(TAG, "Map init/start failed: " + e.getMessage(), e);
                             postShortToast("Map init failed");
@@ -520,7 +527,7 @@ public class WalkFragment extends Fragment {
         if (!isAdded()) return;
 
         isRunning = false;
-        toggleRunButton.setText("Launch");
+
         Toast.makeText(getContext(), "End", Toast.LENGTH_SHORT).show();
 
         try {
@@ -1125,29 +1132,42 @@ public class WalkFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-        Log.d(TAG, "onViewCreated(), root=" + view);
 
-        // 立刻尝试创建（不等待尺寸，不等待测量）
-        createMapIfNeeded("onViewCreated-immediate");
+        // 延迟等待 mapContainer 布局完成后再初始化
+        if (mapContainer != null) {
+            mapContainer.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                int w = mapContainer.getWidth();
+                int h = mapContainer.getHeight();
+                Log.d(TAG, "mapContainer layout ready: " + w + "x" + h);
 
-        // 再安排一次 post（避免某些机型 attach 时序问题）
-        view.post(() -> createMapIfNeeded("onViewCreated-post"));
+                if (w > 0 && h > 0) {
+                    // 只有在尺寸有效时才初始化 mapTool
+                    if (mapTool == null) {
+                        createMapIfNeeded();  // 确保创建 mapTool 和地图
+                    }
+                }
+            });
+        }
     }
-    private void createMapIfNeeded(String caller) {
+
+
+
+
+    private void createMapIfNeeded() {
         try {
             if (mapContainer == null) {
                 View v = getView();
                 if (v != null) mapContainer = v.findViewById(R.id.map_container);
             }
-            Log.d(TAG, "createMapIfNeeded@" + caller + " mapContainer=" + mapContainer);
+            Log.d(TAG, "createMapIfNeeded@" +" mapContainer=" + mapContainer);
 
             if (mapContainer == null) {
-                Log.e(TAG, "createMapIfNeeded@" + caller + " mapContainer is NULL");
+                Log.e(TAG, "createMapIfNeeded@" + " mapContainer is NULL");
                 return;
             }
 
             if (mapTool == null) {
-                Log.d(TAG, "createMapIfNeeded@" + caller + " -> new MapTool()");
+                Log.d(TAG, "createMapIfNeeded@" +  " -> new MapTool()");
                 mapTool = new MapTool(getContext());
 
                 // 🚩 关键顺序：先 onCreate，再把 mapTool 加到父容器（与 ChatbotFragment 一致）
@@ -1176,7 +1196,7 @@ public class WalkFragment extends Fragment {
 
                 // 再 onResume，确保渲染
                 try {
-                    Log.d(TAG, "createMapIfNeeded@" + caller + " mapTool.onResume()");
+                    Log.d(TAG, "createMapIfNeeded@" +  " mapTool.onResume()");
                     mapTool.onResume();
                 } catch (Throwable t) {
                     Log.e(TAG, "mapTool.onResume failed", t);
@@ -1188,14 +1208,14 @@ public class WalkFragment extends Fragment {
                                 mapContainer.getWidth() + "x" + mapContainer.getHeight()
                 ));
             } else {
-                Log.d(TAG, "createMapIfNeeded@" + caller + " mapTool already exists");
+                Log.d(TAG, "createMapIfNeeded@" + " mapTool already exists");
             }
         } catch (Throwable t) {
-            Log.e(TAG, "createMapIfNeeded@" + caller + " failed", t);
+            Log.e(TAG, "createMapIfNeeded@" +" failed", t);
         }
     }
     // 计算一条路线的总长度（米）
-    private static double computeRouteDistanceMeters(java.util.List<com.example.walkpromote22.data.model.Location> pts) {
+    public static double computeRouteDistanceMeters(java.util.List<com.example.walkpromote22.data.model.Location> pts) {
         if (pts == null || pts.size() < 2) return 0d;
         double sum = 0d;
         for (int i = 1; i < pts.size(); i++) {

@@ -397,14 +397,17 @@ public class GeographyAgent {
                         "注意：只输出大括号包裹的内容，不能包含其他说明或前后缀；大括号使用半角{}（若误用全角｛｝也可以）。" +
                         "下面是一些参考输出";
 
-        String fsUser1 = "I wanna walk around my apartment";
-        String fsAsst1 = "标准输出:{0}";
-        String fsUser2 = "从独墅湖邻里中心走到苏州中心，再去诚品生活喝咖啡";
-        String fsAsst2 = "标准输出:{独墅湖邻里中心, Dushu Lake Neighborhood Center, 苏州中心, Suzhou Center, 诚品生活, ESlite Life}";
-        String fsUser3 = "I wanna eat KFC";
-        String fsAsst3 = "标准输出:{肯德基, KFC}";
-        String fsUser4 = "I would like to have a walk to a park, any suggestions?";
-        String fsAsst4 = "标准输出:{公园, park}";
+        String fsUser4 = "I wanna walk around my apartment";
+        String fsAsst4 = "标准输出:{0}";
+        String fsUser1 = "从独墅湖邻里中心走到苏州中心，再去诚品生活喝咖啡";
+        String fsAsst1 = "标准输出:{独墅湖邻里中心, Dushu Lake Neighborhood Center, 苏州中心, Suzhou Center, 诚品生活, ESlite Life}";
+        String fsUser2 = "I wanna eat KFC";
+        String fsAsst2 = "标准输出:{肯德基, KFC}";
+
+        String fsUser3 = "Find nearest park";
+        String fsAsst3 = "{公园，park}";
+        String fsUser5 = "I would like to have a walk to a park, any suggestions?";
+        String fsAsst5 = "标准输出:{公园, park}";
 
 
         JSONArray hist = new JSONArray()
@@ -416,7 +419,9 @@ public class GeographyAgent {
                 .put(new JSONObject().put("role", "user").put("content", fsUser3))
                 .put(new JSONObject().put("role", "assistant").put("content", fsAsst3))
                 .put(new JSONObject().put("role", "user").put("content", fsUser4))
-                .put(new JSONObject().put("role", "assistant").put("content", fsAsst4));;
+                .put(new JSONObject().put("role", "assistant").put("content", fsAsst4))
+                .put(new JSONObject().put("role", "user").put("content", fsUser5))
+                .put(new JSONObject().put("role", "assistant").put("content", fsAsst5));;
         hist = prependTranscript(hist, safeGetTranscript());
 
         final long tSys1 = System.currentTimeMillis();
@@ -633,14 +638,19 @@ public class GeographyAgent {
 
         // ---------------- 6) 转 JSONArray & 退出 ----------------
         JSONArray result = new JSONArray();
+        int i=0;
         for (Location L : out) {
             JSONObject o = new JSONObject();
             o.put("name", L.getName());
             o.put("latitude", L.getLatitude());
             o.put("longitude", L.getLongitude());
             result.put(o);
+            if (i >=10) {
+                break;
+            }
+            i++;
         }
-        final long t1 = System.currentTimeMillis();
+
 
         return result;
     }
@@ -672,7 +682,20 @@ public class GeographyAgent {
                         "2.如果用户没有明确的起点，那默认起点为用户当前位置:" + location + "如果用户指定了起点则用其作为起点" +
                         "3.请根据用户需求和地点列表直接返回上述结构的json路线" +
                         "4.如果用户没有明确哪个地点是终点哪个地点是途径点，则默认举例用户近到远排序"+
-                        "5.尽量避开trafficEvent";
+                        "5.尽量避开trafficEvent"+
+                "正确回复格式："+
+                        "      \"waypoints\": [\n" +
+                        "      {\n" +
+                        "        \"name\": \"User Location\",\n" +
+                        "         \"lat\": 30.651032,\n" +
+                        "          \"lng\": 114.191004\n" +
+                        "             },\n" +
+                        "              {\n" +
+                        "             \"name\": \"金银湖龙舟文化公园\",\n" +
+                        "          \"lat\": 30.64628,\n" +
+                        "          \"lng\": 114.190282\n" +
+                        "        }\n" +
+                        "      ]\n";
 
 
 

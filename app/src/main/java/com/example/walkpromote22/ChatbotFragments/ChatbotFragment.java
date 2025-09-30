@@ -11,6 +11,7 @@ import static com.example.walkpromote22.Manager.RouteSyncManager.ensureInitializ
 import static com.example.walkpromote22.Manager.RouteSyncManager.setPendingRouteDescription;
 import static com.example.walkpromote22.Manager.RouteSyncManager.uploadLocations;
 import static com.example.walkpromote22.WalkFragments.AccompanyAgent.buildUserInputs;
+import static com.example.walkpromote22.WalkFragments.WalkFragment.computeRouteDistanceMeters;
 import static com.example.walkpromote22.tool.MapTool.getCurrentLocation;
 import static com.example.walkpromote22.tool.MapTool.rank;
 import static com.example.walkpromote22.tool.MapTool.trimLocationName;
@@ -362,6 +363,7 @@ public class ChatbotFragment extends Fragment {
                             "When you want to get user's history queries on route and results to refer to , just respond: {User_History}" +
                             "When you want to navigate user(using navigation after showing the route to user) and get user's permission, you can respond: {Navigation_API}" +
 
+
                             "The time now is" + formatted + ", and the weather now is" + weather + ",the user is at" + userLocation + ",the user recent walking steps are" + Payload[0] +
                             "You can only use token twice in a row without the user requesting it" +
                             "Don't just reply with a token,You should tell the user that you are looking for something or ask the user to wait while you invoke the token*****." +
@@ -573,7 +575,7 @@ public class ChatbotFragment extends Fragment {
 
         // —— 3) 自动工具调用跳数上限 —— //
         final java.util.concurrent.atomic.AtomicInteger apiHops = new java.util.concurrent.atomic.AtomicInteger(0);
-        final int MAX_API_HOPS = 1;
+        final int MAX_API_HOPS = 2;
 
         // —— 4) 触发令牌（两种写法：{Token} / Request:{Token}）—— //
         final int CI = java.util.regex.Pattern.CASE_INSENSITIVE;
@@ -721,6 +723,7 @@ public class ChatbotFragment extends Fragment {
                 requireActivity().runOnUiThread(() -> addChatMessage("（空响应）", false));
                 return;
             }
+            Log.e("tag","完整回复="+replyRaw);
             replyRaw = removeMultipleTokens(replyRaw); // 你已有的去重/规整方法（如无可去掉）
 
             boolean needRoute     = P_ROUTE_BRACE.matcher(replyRaw).find()   || P_ROUTE_REQ.matcher(replyRaw).find()
@@ -1061,7 +1064,7 @@ public class ChatbotFragment extends Fragment {
                     }
                 }
                 Log.e("tag","9");
-                String payloadRoute = "Route generated from your request {Map_API_Route}\n" + routeArr.toString()+",now you can call {Drawing_API} if you want to show user the route";
+                String payloadRoute = "now you should respond with {Drawing_API} if you want to show user the route.Route generated from your request {Map_API_Route}\n,!!! ";
                 Consumer<String> f = feedRef.get();
                 if (f != null) requireActivity().runOnUiThread(() -> f.accept(payloadRoute));
 
@@ -1325,29 +1328,15 @@ public class ChatbotFragment extends Fragment {
 
 
 
+    @SuppressLint("SetTextI18n")
     private void handleNavigationRequest(List<Location> route) {
-        if(route!=null) Log.e(TAG,"喂给导航的路线点数量："+route.size());
-        else  {Log.e(TAG,"喂给导航的路线点数量:0");}
-        WalkFragment wf = new WalkFragment();
-        Bundle b = new Bundle();
-        uploadUserHistory(
-                lastRouteForUpload,
-                conversationHistory,
-                new RouteSyncManager.OnRouteCreated() {
-                    @Override
-                    public void onSuccess(long routeId) {
-                        Log.i("RouteSync", "✅ 上传成功 routeId=" + routeId);
-                        b.putSerializable("routeId",routeId);
-                    }
+        if (route != null)
+            Log.e(TAG, "喂给导航的路线点数量：" + route.size());
+        else
+            Log.e(TAG, "喂给导航的路线点数量:0");
 
-                    @Override
-                    public void onFail(Exception e) {
-                        Log.e("RouteSync", "❌ 上传失败", e);
-                    }
-                }
-        );
-        // 1) 切换到导航 UI（你已有的代码）
-        startNav=true;
+        // 先切换 ChatbotFragment 自己的 UI（聊天区→导航区）
+        startNav = true;
         chatModeContainer.setVisibility(View.GONE);
         navigationModeContainer.setVisibility(View.VISIBLE);
         rvNav.setAdapter(chatAdapter);
@@ -1356,43 +1345,54 @@ public class ChatbotFragment extends Fragment {
         activeSend = btnSendNav;
         bindComposer(activeInput, activeSend);
 
-        // 2) 动态加载 WalkFragment
+        // ⚠️ 注意：上传成功回调里再创建并提交 WalkFragment
+        uploadUserHistory(
+                lastRouteForUpload,
+                conversationHistory,
+                new RouteSyncManager.OnRouteCreated() {
+                    @Override
+                    public void onSuccess(long routeId) {
+                        Log.i("RouteSync", "✅ 上传成功 routeId=" + routeId);
 
-        b.putString("user_key", userKey);
-        if (route != null && !route.isEmpty()) {
-            b.putSerializable("route_points", new java.util.ArrayList<>(route));
-        }
+                        requireActivity().runOnUiThread(() -> {
+                            Bundle b = new Bundle();
+                            b.putString("user_key", userKey);
+                            b.putSerializable("routeId", routeId);
+                            if (route != null && !route.isEmpty()) {
+                                b.putSerializable("route_points", new ArrayList<>(route));
+                            }
 
-        wf.setArguments(b);
+                            WalkFragment wf = new WalkFragment();
+                            wf.setArguments(b);
 
-        // 3) 立即提交，拿到实例
-        getChildFragmentManager()
-                .beginTransaction()
-                .replace(R.id.navigation_container, wf)
-                .commitNow();
+                            getChildFragmentManager()
+                                    .beginTransaction()
+                                    .replace(R.id.navigation_container, wf)
+                                    .commitNow();
 
+                            WalkFragment current = (WalkFragment) getChildFragmentManager()
+                                    .findFragmentById(R.id.navigation_container);
 
-        WalkFragment current = (WalkFragment) getChildFragmentManager()
-                .findFragmentById(R.id.navigation_container);
-        // ChatbotFragment 切换到导航模式后：
-        View nav = requireView().findViewById(R.id.navigation_container);
+                            JSONArray userInputs = buildUserInputs(conversationHistory);
+                            try {
+                                if (current != null) {
+                                    current.attachSmartGuide(userInputs);
+                                }
+                            } catch (Exception e) {
+                                Log.e("ChatbotFragment", "attachSmartGuide failed", e);
+                            }
 
-        org.json.JSONArray userInputs = buildUserInputs(conversationHistory);
+                            View nav = requireView().findViewById(R.id.navigation_container);
+                            nav.post(() -> Log.d("ChatbotFragment",
+                                    "navigation_container size = " + nav.getWidth() + "x" + nav.getHeight()));
+                        });
+                    }
 
-        // 5) 把 userInputs 传给 WalkFragment，WalkFragment 会自己负责定位与 SmartGuide 循环
-        try {
-            current.attachSmartGuide(userInputs);
-        } catch (Exception e) {
-            Log.e("ChatbotFragment", "attachSmartGuide failed", e);
-        }
-
-
-        nav.post(() -> Log.d("ChatbotFragment",
-                "navigation_container size = " + nav.getWidth() + "x" + nav.getHeight()));
-
-
-
-        if (current == null) return;
+                    @Override
+                    public void onFail(Exception e) {
+                        Log.e("RouteSync", "❌ 上传失败", e);
+                    }
+                });
 
     }
 
@@ -1605,8 +1605,11 @@ public class ChatbotFragment extends Fragment {
             chip.setLayoutParams(chipLp);
             card.addView(chip);
 
-            mapdistance(route, userLocation,
-                    r -> chip.setText(String.format(Locale.getDefault(), "%.0f m", r.getValue())));
+            // 计算整个路线的总长度并转换为千米
+            double totalRouteDistanceKm = computeRouteDistanceMeters(route) / 1000.0;
+
+// 更新显示为整个路线的长度（以千米为单位）
+            chip.setText(String.format(Locale.getDefault(), "%.2f km", totalRouteDistanceKm));
 
             /* ——— Map ready ——— */
             mapView.postDelayed(() -> {

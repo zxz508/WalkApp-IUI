@@ -5,7 +5,6 @@ import static android.content.ContentValues.TAG;
 
 import android.Manifest;
 import android.app.AlertDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -26,7 +25,6 @@ import com.example.walkpromote22.ChatbotFragments.ChatbotFragment;
 import com.example.walkpromote22.Manager.RouteSyncManager;
 import com.example.walkpromote22.Manager.StepSyncManager;
 import com.example.walkpromote22.Manager.PathSyncManager;
-import com.example.walkpromote22.ProfileFragments.PersonalInfoFragment;
 import com.example.walkpromote22.ProfileFragments.ProfileFragment;
 import com.example.walkpromote22.R;
 import com.example.walkpromote22.TodayFragments.StepService;
@@ -39,6 +37,9 @@ import com.example.walkpromote22.data.model.User;
 import com.example.walkpromote22.service.ApiService;
 import com.example.walkpromote22.tool.UserPreferences;
 
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -53,7 +54,7 @@ public class MainActivity extends AppCompatActivity {
     // Fragments
     public static boolean isWeatherFetched = false;  // 用于标记天气是否已获取
     private final WalkFragment walkFragment = new WalkFragment();
-    private final TodayFragment todayFragmentGooglefitness = new TodayFragment();
+    private final TodayFragment todayFragment = new TodayFragment();
     private final ProfileFragment profileFragment = new ProfileFragment();
     private final ChatbotFragment chatbotFragment = new ChatbotFragment();
 
@@ -105,7 +106,6 @@ public class MainActivity extends AppCompatActivity {
         // 读取 userKey、步数历史导入
         sharedPreferences = getSharedPreferences("user_prefs", MODE_PRIVATE);
         userKey = sharedPreferences.getString("USER_KEY", null);
-        new StepSyncManager(this).importHistorySteps();
 
         // 初始化数据库 & 偏好
         AppDatabase db = AppDatabase.getDatabase(this);
@@ -201,7 +201,7 @@ public class MainActivity extends AppCompatActivity {
         navProfile = findViewById(R.id.nav_profile);
         navChatbot = findViewById(R.id.nav_gpt);
 
-        navToday.setOnClickListener(v -> updateNavigationSelection(R.id.nav_today, todayFragmentGooglefitness));
+        navToday.setOnClickListener(v -> updateNavigationSelection(R.id.nav_today, todayFragment));
         navRunning.setOnClickListener(v -> updateNavigationSelection(R.id.nav_walk, walkFragment));
         navProfile.setOnClickListener(v -> updateNavigationSelection(R.id.nav_profile, profileFragment));
         navChatbot.setOnClickListener(v -> updateNavigationSelection(R.id.nav_gpt, chatbotFragment));

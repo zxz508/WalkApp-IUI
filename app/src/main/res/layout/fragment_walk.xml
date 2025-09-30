@@ -49,16 +49,7 @@
             app:layout_constraintEnd_toEndOf="parent"/>
     </androidx.constraintlayout.widget.ConstraintLayout>
 
-    <!-- 选择按钮：放在上方 -->
-    <Button
-        android:id="@+id/btn_toggle_select"
-        android:layout_width="0dp"
-        android:layout_height="45dp"
-        android:layout_marginBottom="12dp"
-        android:text=""
-        app:layout_constraintBottom_toTopOf="@id/btn_toggle_run"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+
 
     <!-- 开始/结束跑步按钮：放在底部。
          若运行时需要“彻底隐藏”，请使用 INVISIBLE 保留占位，避免内容被覆盖。 -->
@@ -66,6 +57,7 @@
         android:id="@+id/btn_toggle_run"
         android:layout_width="0dp"
         android:layout_height="45dp"
+        android:visibility="gone"
         android:layout_marginBottom="24dp"
         android:text="Get moving"
         app:layout_constraintBottom_toBottomOf="parent"

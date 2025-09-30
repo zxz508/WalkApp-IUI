@@ -3,9 +3,12 @@ package com.example.walkpromote22.Manager;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.example.walkpromote22.data.dao.StepDao;
 import com.example.walkpromote22.data.database.AppDatabase;
@@ -81,9 +84,7 @@ public class StepSyncManager {
 
 
     /* ---------------- ① 首次登录：拉全部历史 ---------------- */
-    public void importHistorySteps() {
-
-
+    public void importHistorySteps(@Nullable Runnable onImportFinished) {
         String userKey = userPref.getUserKey();
         if (userKey == null) return;
 
@@ -97,11 +98,21 @@ public class StepSyncManager {
                     stepDao.insertStep(new Step(dto.getUserKey(), dto.getDate(),
                             dto.getStepCount(), dto.getDistance()));
                 }
+
                 sp.edit().putBoolean(KEY_FIRST, true).apply();
-                Log.e("tag","成功拉取云端步数数据");
+                Log.e("tag","成功拉取云端步数数据="+stepDao.getStepByDate(userKey,"2025-09-30").getStepCount());
+
+                // 通知主线程触发 UI 更新
+                if (onImportFinished != null) {
+                    new Handler(Looper.getMainLooper()).post(onImportFinished);
+                }
+
             } catch (IOException ignored) { }
         });
+
+
     }
+
 
     /* ---------------- ② 上传今日单条记录 ---------------- */
     public void uploadToday() {
